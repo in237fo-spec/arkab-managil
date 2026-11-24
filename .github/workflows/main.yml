@@ -1,4 +1,4 @@
-name: Fix ARKAB Build
+name: ARKAB Maps Setup
 
 on:
   workflow_dispatch:
@@ -7,30 +7,48 @@ permissions:
   contents: write
 
 jobs:
-  fix:
+  setup:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Pillow
-        run: pip install Pillow
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Fix logo format
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install maps and GPS
         run: |
-          python - <<'PY'
-          from PIL import Image
+          npx --yes @expo/agent-cli@latest install expo-location @maplibre/maplibre-react-native@11.5.1
 
-          path = "assets/logo.png"
-          img = Image.open(path).convert("RGBA")
-          img = img.resize((1024, 1024))
-          img.save(path, format="PNG")
-          PY
+      - name: Configure Expo
+        run: |
+          node <<'JS'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+          const e = config.expo;
+          e.version = '0.4.0';
+          e.android = e.android || {};
+          e.android.versionCode = 4;
+          e.android.permissions = [...new Set([
+            ...(e.android.permissions || []),
+            'ACCESS_FINE_LOCATION',
+            'ACCESS_COARSE_LOCATION'
+          ])];
+          e.plugins = e.plugins || [];
+          for (const p of ['expo-location', '@maplibre/maplibre-react-native']) {
+            if (!e.plugins.includes(p)) e.plugins.push(p);
+          }
+          fs.writeFileSync('app.json', JSON.stringify(config, null, 2));
+          JS
 
-      - name: Save fix
+      - name: Save changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/logo.png
-          git commit -m "Fix Android logo PNG format"
+          git add package.json package-lock.json app.json
+          git diff --cached --quiet || git commit -m "ARKAB v0.4 Maps and GPS setup"
           git push
