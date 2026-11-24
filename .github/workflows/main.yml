@@ -1,4 +1,4 @@
-name: Extract ARKAB Source
+name: Fix ARKAB Build
 
 on:
   workflow_dispatch:
@@ -7,22 +7,30 @@ permissions:
   contents: write
 
 jobs:
-  extract:
+  fix:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Extract project
+      - name: Install Pillow
+        run: pip install Pillow
+
+      - name: Fix logo format
         run: |
-          unzip -o ARKAB-v0.2-source.zip
-          cp -a arkab/. .
-          
-      - name: Save project files
+          python - <<'PY'
+          from PIL import Image
+
+          path = "assets/logo.png"
+          img = Image.open(path).convert("RGBA")
+          img = img.resize((1024, 1024))
+          img.save(path, format="PNG")
+          PY
+
+      - name: Save fix
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "Extract ARKAB project files"
+          git add assets/logo.png
+          git commit -m "Fix Android logo PNG format"
           git push
