@@ -8,15 +8,21 @@
         "projectId": "653d655f-1c9e-4b85-b8b6-ccc819b2943b"
       }
     },
-    "version": "0.2.0",
+    "version": "0.4.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.arkab.managil",
-      "versionCode": 2
+      "versionCode": 4,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      "@maplibre/maplibre-react-native",
+      "expo-location"
     ],
     "icon": "./assets/logo.png"
   }
