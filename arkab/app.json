@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "اركب",
+    "slug": "arkab-managil",
+    "owner": "omer123mnm",
+    "extra": {
+      "eas": {
+        "projectId": "653d655f-1c9e-4b85-b8b6-ccc819b2943b"
+      }
+    },
+    "version": "0.2.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.arkab.managil",
+      "versionCode": 2
+    },
+    "plugins": [
+      "expo-secure-store"
+    ],
+    "icon": "./assets/logo.png"
+  }
+}
