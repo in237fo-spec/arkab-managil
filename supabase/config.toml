@@ -1,0 +1,4 @@
+project_id = "hfhkscqmsmxsxzjfxzew"
+
+[functions.arkab-ride-push]
+verify_jwt = false

@@ -1,6 +1,6 @@
 {
   "name": "arkab",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "main": "expo/AppEntry",
   "scripts": {
@@ -11,8 +11,10 @@
     "@maplibre/maplibre-react-native": "11.5.1",
     "@supabase/supabase-js": "2.80.0",
     "expo": "~54.0.0",
+    "expo-crypto": "~15.0.9",
     "expo-image-picker": "~17.0.11",
     "expo-location": "~19.0.8",
+    "expo-notifications": "~0.32.17",
     "expo-secure-store": "~15.0.8",
     "expo-task-manager": "~14.0.9",
     "react": "19.1.0",
