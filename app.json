@@ -8,21 +8,37 @@
         "projectId": "653d655f-1c9e-4b85-b8b6-ccc819b2943b"
       }
     },
-    "version": "0.4.0",
+    "version": "0.5.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.arkab.managil",
-      "versionCode": 4,
+      "versionCode": 5,
       "permissions": [
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "ACCESS_COARSE_LOCATION",
+        "POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
       "expo-secure-store",
       "@maplibre/maplibre-react-native",
-      "expo-location"
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "يستخدم أركب موقعك لتحديد نقطة الانطلاق ومتابعة الرحلة.",
+          "locationAlwaysAndWhenInUsePermission": "يستخدم أركب موقع الكابتن في الخلفية أثناء الرحلة النشطة فقط لمشاركته مع الراكب.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "يحتاج أركب إلى الوصول إلى الصور لاختيار صورة الملف الشخصي للكابتن."
+        }
+      ]
     ],
     "icon": "./assets/logo.png"
   }

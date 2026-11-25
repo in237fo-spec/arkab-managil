@@ -3,12 +3,14 @@ import React, {useState, useEffect, useRef} from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   ScrollView, Image, StyleSheet,
-  ActivityIndicator, StatusBar, AppState
+  ActivityIndicator, StatusBar, AppState, Linking
 } from 'react-native';
 import {SafeAreaProvider, SafeAreaView}
   from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
 import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
+import * as ImagePicker from 'expo-image-picker';
 import {Map, Camera, Marker} from '@maplibre/maplibre-react-native';
 import {createClient} from '@supabase/supabase-js';
 
@@ -34,6 +36,39 @@ const db = createClient(
     }
   }
 );
+
+const DRIVER_LOCATION_TASK = 'arkab-driver-background-location-v1';
+const ACTIVE_RIDE_KEY = 'arkab.background.activeRideId';
+const ACTIVE_DRIVER_KEY = 'arkab.background.driverId';
+
+if (!TaskManager.isTaskDefined(DRIVER_LOCATION_TASK)) {
+  TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({data,error}) => {
+    if (error || !data?.locations?.length) return;
+    try {
+      const rideId = await SecureStore.getItemAsync(ACTIVE_RIDE_KEY);
+      const driverId = await SecureStore.getItemAsync(ACTIVE_DRIVER_KEY);
+      if (!rideId || !driverId) {
+        await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
+        return;
+      }
+      const {data:ride,error:rideError} = await db.from('rides')
+        .select('id,status,driver_id').eq('id',rideId).eq('driver_id',driverId).maybeSingle();
+      if (rideError || !ride || !['accepted','arrived','in_progress'].includes(ride.status)) {
+        await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
+        await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
+        await SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY);
+        return;
+      }
+      const latest = data.locations[data.locations.length-1];
+      const {error:saveError} = await db.from('ride_locations').upsert({
+        ride_id:rideId, driver_id:driverId, latitude:latest.coords.latitude,
+        longitude:latest.coords.longitude,
+        updated_at:new Date(latest.timestamp || Date.now()).toISOString()
+      });
+      if (saveError) throw saveError;
+    } catch (_) { /* next background location event retries */ }
+  });
+}
 
 const states = {
   requested: 'بانتظار العروض',
@@ -188,6 +223,7 @@ function Main() {
   const [driver,SD] = useState(null);
   const [vehicles,SV] = useState([]);
   const [plate,SP] = useState('');
+  const [driverPhone,SDriverPhone] = useState('');
 
   const [pickup,A] = useState('');
   const [dest,B] = useState('');
@@ -208,6 +244,15 @@ function Main() {
   const [notice,SN] = useState('');
 
   const [activeRide,AR] = useState(null);
+  const previousActive = useRef(null);
+  useEffect(()=>{
+    if(profile?.role==='passenger' && previousActive.current && !activeRide) D('home');
+    previousActive.current=activeRide?.id || null;
+  },[activeRide?.id,profile?.role]);
+  const [activeDriver,ADR] = useState(null);
+  const [activeVehicle,AV] = useState(null);
+  const [ratedRides,RR] = useState([]);
+  const [ratingDraft,RD] = useState({});
   const [driverPoint,DP] = useState(null);
   const [locationTime,LT] = useState(0);
   const [sharing,SH] = useState(false);
@@ -216,6 +261,7 @@ function Main() {
   const lastSent = useRef(0);
 
   const km = distanceKm(pickupPoint,destPoint);
+  useEffect(()=>{ if(profile?.contact_phone) SDriverPhone(profile.contact_phone); },[profile?.id]);
 
   function stopTracking() {
     sharingRef.current = false;
@@ -330,10 +376,26 @@ function Main() {
         .limit(100)));
 
       const active=own.find(r=>
-        activeStates.includes(r.status)
+        activeStates.includes(r.status) || (p.role==='passenger' && r.status==='requested')
       );
 
       AR(active || null);
+      if (p.role==='driver') {
+        const running=await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>false);
+        const storedRideId=await SecureStore.getItemAsync(ACTIVE_RIDE_KEY);
+        if(running && (!active || active.driver_id!==id || storedRideId!==active.id)) {
+          await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
+          await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
+          await SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY); SH(false);
+        } else SH(Boolean(running && active && storedRideId===active.id));
+      }
+      if (active?.driver_id) {
+        const dp = check(await db.from('profiles').select('id,full_name,contact_phone,avatar_url').eq('id',active.driver_id).maybeSingle());
+        const dv = check(await db.from('vehicles').select('kind,plate').eq('driver_id',active.driver_id).eq('approved',true).eq('kind',active.vehicle_kind).limit(2));
+        ADR(dp); AV(dv?.length===1?dv[0]:null);
+      } else { ADR(null); AV(null); }
+      const ratings = check(await db.from('ratings').select('ride_id').eq('passenger_id',id));
+      RR((ratings||[]).map(x=>x.ride_id));
 
     } catch(e) {
       E(e.message);
@@ -362,6 +424,9 @@ function Main() {
 
       if(!v){
         stopTracking();
+        Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
+        SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY).catch(()=>{});
+        SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY).catch(()=>{});
         P(null);
         AR(null);
         DP(null);
@@ -463,82 +528,71 @@ function Main() {
   },[activeRide?.id,session?.user.id]);
 
   async function startSharing(){
-    if(!activeRide ||
-      activeRide.driver_id!==session.user.id ||
-      !activeStates.includes(activeRide.status)){
+    if(!activeRide || activeRide.driver_id!==session.user.id || !activeStates.includes(activeRide.status))
       throw Error('لا توجد رحلة نشطة مرتبطة بحسابك');
-    }
-
-    const permission=await
-      Location.requestForegroundPermissionsAsync();
-
-    if(permission.status!=='granted')
-      throw Error('يرجى السماح بالوصول إلى الموقع');
-
-    stopTracking();
-    sharingRef.current=true;
-    SH(true);
-    lastSent.current=0;
-
-    const rideId=activeRide.id;
-    const uid=session.user.id;
-
-    try{
-      const subscription=await Location.watchPositionAsync({
-        accuracy:Location.Accuracy.Balanced,
-        timeInterval:10000,
-        distanceInterval:10
-      },async position=>{
-        if(!sharingRef.current ||
-          AppState.currentState!=='active') return;
-
-        if(Date.now()-lastSent.current<10000) return;
-        lastSent.current=Date.now();
-
-        const c=position.coords;
-
-        const {error}=await db
-          .from('ride_locations')
-          .upsert({
-            ride_id:rideId,
-            driver_id:uid,
-            latitude:c.latitude,
-            longitude:c.longitude,
-            updated_at:new Date().toISOString()
-          });
-
-        if(error){
-          E('تعذر مشاركة الموقع: '+error.message);
-          stopTracking();
-        }
-      });
-
-      if(sharingRef.current){
-        watchRef.current=subscription;
-      }else{
-        subscription.remove();
-      }
-    }catch(e){
-      stopTracking();
-      throw e;
+    const foreground=await Location.requestForegroundPermissionsAsync();
+    if(foreground.status!=='granted') throw Error('يجب السماح بموقع الهاتف أثناء استخدام التطبيق');
+    await new Promise((resolve,reject)=>Alert.alert(
+      'السماح بمشاركة الموقع في الخلفية',
+      'سيشارك أركب موقعك مع الراكب أثناء الرحلة النشطة فقط، حتى عند تصغير التطبيق أو إطفاء الشاشة. سيظهر إشعار دائم أثناء المشاركة.',
+      [{text:'متابعة',onPress:resolve},{text:'إلغاء',style:'cancel',onPress:()=>reject(Error('تم إلغاء تفعيل تتبع الخلفية'))}]
+    ));
+    const background=await Location.requestBackgroundPermissionsAsync();
+    if(background.status!=='granted') throw Error('فعّل إذن الموقع في الخلفية من إعدادات الهاتف');
+    const running=await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK);
+    if(running) await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK);
+    await SecureStore.setItemAsync(ACTIVE_RIDE_KEY,activeRide.id);
+    await SecureStore.setItemAsync(ACTIVE_DRIVER_KEY,session.user.id);
+    const current=await Location.getCurrentPositionAsync({accuracy:Location.Accuracy.High});
+    const {error:initialError}=await db.from('ride_locations').upsert({
+      ride_id:activeRide.id,driver_id:session.user.id,
+      latitude:current.coords.latitude,longitude:current.coords.longitude,
+      updated_at:new Date(current.timestamp||Date.now()).toISOString()
+    });
+    if(initialError) throw initialError;
+    const options={accuracy:Location.Accuracy.High,timeInterval:7000,distanceInterval:10,
+      deferredUpdatesInterval:10000,pausesUpdatesAutomatically:false,showsBackgroundLocationIndicator:true};
+    if(Platform.OS==='android') options.foregroundService={
+      notificationTitle:'أركب | مشاركة موقع الرحلة',
+      notificationBody:'موقعك يُشارك مع الراكب أثناء الرحلة النشطة فقط',
+      notificationColor:G,killServiceOnDestroy:false
+    };
+    try {
+      await Location.startLocationUpdatesAsync(DRIVER_LOCATION_TASK,options);
+      SH(true); SN('بدأ التتبع في الخلفية. سيظل الإشعار ظاهراً حتى انتهاء الرحلة.');
+    } catch(e) {
+      await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
+      await SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY); throw e;
     }
   }
 
   async function stopSharing(){
     stopTracking();
-
-    if(activeRide &&
-      activeRide.driver_id===session?.user.id){
-
-      const {error}=await db.from('ride_locations')
-        .update({updated_at:new Date(0).toISOString()})
-        .eq('ride_id',activeRide.id)
-        .eq('driver_id',session.user.id);
-
+    const running=await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>false);
+    if(running) await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK);
+    await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
+    await SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY);
+    if(activeRide && activeRide.driver_id===session?.user.id){
+      const {error}=await db.from('ride_locations').update({updated_at:new Date(0).toISOString()})
+        .eq('ride_id',activeRide.id).eq('driver_id',session.user.id);
       if(error) E(error.message);
     }
+    DP(null); SH(false);
+  }
 
-    DP(null);
+  async function chooseDriverAvatar(){
+    const result=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],allowsEditing:true,aspect:[1,1],quality:0.82});
+    if(result.canceled || !result.assets?.[0]) return;
+    const asset=result.assets[0];
+    const mime=['image/jpeg','image/png','image/webp'].includes(asset.mimeType)?asset.mimeType:'image/jpeg';
+    const response=await fetch(asset.uri); const bytes=await response.arrayBuffer();
+    if(bytes.byteLength>3*1024*1024) throw Error('حجم الصورة يجب ألا يتجاوز 3 ميجابايت');
+    const path=`${session.user.id}/avatar`;
+    const {error:uploadError}=await db.storage.from('driver-avatars').upload(path,bytes,{contentType:mime,upsert:true,cacheControl:'3600'});
+    if(uploadError) throw uploadError;
+    const {data:urlData}=db.storage.from('driver-avatars').getPublicUrl(path);
+    const updated=check(await db.from('profiles').update({avatar_url:urlData.publicUrl}).eq('id',session.user.id).select().single());
+    P(v=>({...v,...updated})); SN('تم رفع صورة الكابتن وحفظها بنجاح');
   }
 
   return (
@@ -658,6 +712,7 @@ function Main() {
                 check(await db.from('profiles').insert({
                   id:session.user.id,
                   full_name:name.trim(),
+                  contact_phone:phone.trim(),
                   role
                 }));
               })}>حفظ الحساب</Button>
@@ -695,6 +750,25 @@ function Main() {
                 <Text style={s.body}>
                   {states[activeRide.status]}
                 </Text>
+                <View style={s.tripSummary}>
+                  <Text style={s.body}>📍 الانطلاق: {activeRide.pickup}</Text>
+                  <Text style={s.body}>🏁 الوجهة: {activeRide.destination}</Text>
+                  <Text style={s.body}>🛺 نوع المركبة: {activeRide.vehicle_kind==='rickshaw'?'ركشة':'تكتك نقل'}</Text>
+                  <Text style={s.body}>📏 المسافة: {Number(activeRide.distance_km||0).toFixed(1)} كم تقريباً</Text>
+                  <Text style={s.body}>⏱ الزمن المتوقع: {Math.max(3,Math.ceil(Number(activeRide.distance_km||0)*3))} دقيقة تقريباً (تقديري)</Text>
+                  <Text style={s.fare}>💰 الأجرة: {activeRide.agreed_fare??activeRide.proposed_fare} ج.س</Text>
+                </View>
+                {profile.role==='passenger' && activeDriver && (
+                  <View style={s.driverCard}>
+                    {activeDriver.avatar_url ? <Image source={{uri:activeDriver.avatar_url}} style={s.driverAvatar}/> : <View style={s.driverAvatarFallback}><Text style={s.driverInitial}>{(activeDriver.full_name||'ك').slice(0,1)}</Text></View>}
+                    <View style={{flex:1,gap:4}}>
+                      <Text style={s.title}>{activeDriver.full_name||'الكابتن'}</Text>
+                      <Text style={s.body}>{activeRide.vehicle_kind==='rickshaw'?'ركشة':'تكتك نقل'} • {activeVehicle?.plate||'بيانات المركبة غير متاحة'}</Text>
+                      <Text style={s.body}>{activeDriver.contact_phone||'رقم الهاتف غير مسجل'}</Text>
+                    </View>
+                    {!!activeDriver.contact_phone && <Button onPress={()=>Linking.openURL('tel:'+activeDriver.contact_phone)}>اتصال</Button>}
+                  </View>
+                )}
 
                 <RideMap
                   key={activeRide.id}
@@ -718,8 +792,7 @@ function Main() {
                  activeRide.driver_id===session.user.id && (
                   <>
                     <Text style={s.body}>
-                      سيظهر موقعك لراكب هذه الرحلة فقط،
-                      أثناء فتح التطبيق.
+                      سيظهر موقعك للراكب أثناء الرحلة، حتى عند تصغير التطبيق أو إطفاء الشاشة. سيظهر إشعار دائم أثناء المشاركة.
                     </Text>
 
                     <Button disabled={busy}
@@ -730,6 +803,9 @@ function Main() {
                         'مشاركة موقعي مع الراكب'}
                     </Button>
                   </>
+                )}
+                {profile.role==='passenger' && ['requested','accepted','arrived'].includes(activeRide.status) && (
+                  <Button secondary disabled={busy} onPress={()=>act(()=>rpc('advance_ride',{p_ride:activeRide.id,p_status:'cancelled'}))}>إلغاء الرحلة</Button>
                 )}
               </View>
             )}
@@ -862,6 +938,14 @@ function Main() {
                       {driver.approved?'حساب معتمد':
                         'بانتظار اعتماد الإدارة'}
                     </Text>
+                    <Field label="رقم هاتف الكابتن" value={driverPhone} onChangeText={SDriverPhone} keyboardType="phone-pad"/>
+                    {profile.avatar_url ? <Image source={{uri:profile.avatar_url}} style={s.avatarPreview}/> : <View style={s.avatarEmpty}><Text style={s.body}>لم تُرفع صورة للكابتن بعد</Text></View>}
+                    <Button secondary disabled={busy} onPress={()=>run(chooseDriverAvatar)}>اختيار صورة من معرض الهاتف ورفعها</Button>
+                    <Button disabled={busy} onPress={()=>act(async()=>{
+                      if(driverPhone.trim() && !/^\+249\d{9}$/.test(driverPhone.trim())) throw Error('أدخل رقم هاتف بصيغة +249XXXXXXXXX');
+                      const updated=check(await db.from('profiles').update({contact_phone:driverPhone.trim()||null}).eq('id',session.user.id).select().single());
+                      P(v=>({...v,...updated})); SN('تم تحديث رقم التواصل');
+                    })}>حفظ رقم الهاتف</Button>
 
                     {driver.approved &&
                       <Button disabled={busy}
@@ -926,6 +1010,16 @@ function Main() {
                 <Text style={s.fare}>
                   {t.agreed_fare??t.proposed_fare} ج.س
                 </Text>
+                {profile.role==='passenger' && t.status==='completed' && !ratedRides.includes(t.id) && (
+                  <View style={s.rateBox}>
+                    <Text style={s.label}>قيّم تجربتك مع الكابتن</Text>
+                    <View style={s.row}>
+                      {[1,2,3,4,5].map(n=><TouchableOpacity key={n} onPress={()=>RD(v=>({...v,[t.id]:n}))}><Text style={{fontSize:30,color:(ratingDraft[t.id]||0)>=n?'#FFB600':'#B8C2BA'}}>★</Text></TouchableOpacity>)}
+                    </View>
+                    <Button disabled={busy||!ratingDraft[t.id]} onPress={()=>act(async()=>{check(await db.from('ratings').insert({ride_id:t.id,passenger_id:session.user.id,score:ratingDraft[t.id]}));RR(v=>[...v,t.id]);})}>إرسال التقييم</Button>
+                  </View>
+                )}
+                {profile.role==='passenger' && t.status==='completed' && ratedRides.includes(t.id) && <Text style={s.success}>شكراً لتقييمك لهذه الرحلة</Text>}
 
                 {profile.role==='driver' &&
                  driver?.approved &&
@@ -1004,7 +1098,7 @@ function Main() {
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • v0.4</Text>
+        <Text style={s.footer}>ARKAB • v0.5</Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -1154,6 +1248,14 @@ const s=StyleSheet.create({
     fontWeight:'bold',
     textAlign:'right'
   },
+  tripSummary:{backgroundColor:'#F1F5F0',padding:12,borderRadius:14,gap:8},
+  driverCard:{flexDirection:'row-reverse',alignItems:'center',gap:12,backgroundColor:'#F8F7F2',padding:12,borderRadius:14},
+  driverAvatar:{width:58,height:58,borderRadius:29},
+  avatarPreview:{width:112,height:112,borderRadius:56,alignSelf:'center',borderWidth:3,borderColor:Y},
+  avatarEmpty:{minHeight:76,alignItems:'center',justifyContent:'center',backgroundColor:'#F1F5F0',borderRadius:14},
+  driverAvatarFallback:{width:58,height:58,borderRadius:29,backgroundColor:G,alignItems:'center',justifyContent:'center'},
+  driverInitial:{color:Y,fontSize:26,fontWeight:'bold'},
+  rateBox:{padding:12,backgroundColor:'#F8F7F2',borderRadius:14,gap:8},
   offer:{
     gap:8,
     padding:12,
