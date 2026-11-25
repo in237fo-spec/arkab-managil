@@ -3,7 +3,7 @@ import React, {useState, useEffect, useRef} from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   ScrollView, Image, StyleSheet,
-  ActivityIndicator, StatusBar, AppState, Linking
+  ActivityIndicator, StatusBar, AppState, Linking, Alert
 } from 'react-native';
 import {SafeAreaProvider, SafeAreaView}
   from 'react-native-safe-area-context';
