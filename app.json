@@ -8,12 +8,12 @@
         "projectId": "653d655f-1c9e-4b85-b8b6-ccc819b2943b"
       }
     },
-    "version": "0.5.0",
+    "version": "0.6.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.arkab.managil",
-      "versionCode": 5,
+      "versionCode": 6,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -22,6 +22,13 @@
     },
     "plugins": [
       "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "rides",
+          "color": "#06432D"
+        }
+      ],
       "@maplibre/maplibre-react-native",
       [
         "expo-location",

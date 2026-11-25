@@ -11,6 +11,8 @@ import * as SecureStore from 'expo-secure-store';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import * as ImagePicker from 'expo-image-picker';
+import * as Crypto from 'expo-crypto';
+import {coordinate,estimateFare,useNearbyVehicles,useAvailableDriverLocation,useRidePush} from './rideFeatures';
 import {Map, Camera, Marker} from '@maplibre/maplibre-react-native';
 import {createClient} from '@supabase/supabase-js';
 
@@ -105,7 +107,7 @@ function Button({children,onPress,secondary,disabled}) {
 
 function Field({
   label,value,onChangeText,
-  keyboardType='default',secure=false
+  keyboardType='default',secure=false,placeholder,maxLength
 }) {
   return (
     <View style={{gap:6}}>
@@ -116,6 +118,8 @@ function Field({
         onChangeText={onChangeText}
         keyboardType={keyboardType}
         secureTextEntry={secure}
+        placeholder={placeholder}
+        maxLength={maxLength}
         autoCapitalize="none"
         autoCorrect={false}
       />
@@ -153,9 +157,9 @@ function Pin({id,point,color,label}) {
 }
 
 function RideMap({
-  pickup,destination,driver,onSelect
+  pickup,destination,driver,onSelect,nearby=[],nearbyAnchor
 }) {
-  const center = pickup || driver || destination || CENTER;
+  const center = pickup || driver || destination || nearbyAnchor || CENTER;
 
   return (
     <View style={s.mapBox}>
@@ -173,6 +177,13 @@ function RideMap({
           }}
         />
 
+        {nearby.map(cell=>(
+          <Pin key={cell.kind+'-'+cell.lat+'-'+cell.lng}
+            id={'nearby-'+cell.kind+'-'+cell.lat+'-'+cell.lng}
+            point={[cell.lng,cell.lat]}
+            color={cell.kind==='rickshaw'?'#246D52':'#915319'}
+            label={(cell.kind==='rickshaw'?'🛺':'📦')+(cell.vehicle_count>1?' '+cell.vehicle_count:'')}/>
+        ))}
         <Pin id="pickup" point={pickup}
           color={G} label="1"/>
 
@@ -233,6 +244,18 @@ function Main() {
   const [mapKey,MK] = useState(0);
   const [vehicle,V] = useState('rickshaw');
   const [price,Q] = useState('');
+  const [pickupNote,setPickupNote] = useState('');
+  const [nearbyAnchor,setNearbyAnchor] = useState(null);
+  const [forSomeone,setForSomeone] = useState(false);
+  const [recipientPhone,setRecipientPhone] = useState('+249');
+  const [cargoDescription,setCargoDescription] = useState('');
+  const [cargoPhoto,setCargoPhoto] = useState(null);
+  const [openedPhoto,setOpenedPhoto] = useState(null);
+  const submittedDraft = useRef(null);
+  const [pricing,setPricing] = useState([]);
+  const [savedRides,setSavedRides] = useState([]);
+  const [notifications,setNotifications] = useState([]);
+  const [focusedRide,setFocusedRide] = useState(null);
 
   const [trips,U] = useState([]);
   const [offers,H] = useState([]);
@@ -261,7 +284,38 @@ function Main() {
   const lastSent = useRef(0);
 
   const km = distanceKm(pickupPoint,destPoint);
+  const estimate = estimateFare(pricing,vehicle,pickupPoint && destPoint ? km : null);
+  const userId = session?.user.id;
+  const nearby = useNearbyVehicles(db,profile?.role==='passenger' && !activeRide && tab==='home' ? userId : null,pickupPoint || nearbyAnchor);
+  const nearbyCount = kind => nearby.rows.filter(row=>row.kind===kind)
+    .reduce((total,row)=>total+row.vehicle_count,0);
+  useAvailableDriverLocation(db,profile?.role==='driver' && driver?.approved && driver?.online && !activeRide ? userId : null,E);
+  const push = useRidePush(db,profile?.id===userId ? userId : null,openRide);
+  const orderedTrips = focusedRide
+    ? [...trips.filter(ride=>ride.id===focusedRide),...trips.filter(ride=>ride.id!==focusedRide)]
+    : trips;
+
+  function openRide(rideId) {
+    setFocusedRide(rideId);
+    D('trips');
+  }
   useEffect(()=>{ if(profile?.contact_phone) SDriverPhone(profile.contact_phone); },[profile?.id]);
+
+  useEffect(()=>{
+    if (!userId || profile?.role!=='passenger') return;
+    let cancelled=false;
+    async function locate() {
+      if ((await Location.getForegroundPermissionsAsync()).status!=='granted') return;
+      const result=await Location.getLastKnownPositionAsync({maxAge:60000,requiredAccuracy:200})
+        || await Location.getCurrentPositionAsync({accuracy:Location.Accuracy.Balanced});
+      if (!cancelled) {
+        setNearbyAnchor([result.coords.longitude,result.coords.latitude]);
+        MK(key=>key+1);
+      }
+    }
+    void locate().catch(()=>{});
+    return ()=>{cancelled=true;};
+  },[userId,profile?.role]);
 
   function stopTracking() {
     sharingRef.current = false;
@@ -359,7 +413,7 @@ function Main() {
 
         if (d?.approved && d?.online) {
           available=check(
-            await db.rpc('available_rides')
+            await db.rpc('available_ride_details')
           ).map(r=>({...r,status:'requested'}));
         }
       }
@@ -396,6 +450,17 @@ function Main() {
       } else { ADR(null); AV(null); }
       const ratings = check(await db.from('ratings').select('ride_id').eq('passenger_id',id));
       RR((ratings||[]).map(x=>x.ride_id));
+
+      const [inboxResult,pricingResult,savedResult] = await Promise.all([
+        db.from('notifications').select('id,ride_id,title,body,created_at')
+          .eq('user_id',id).order('created_at',{ascending:false}).limit(30),
+        p.role==='passenger' ? db.from('pricing').select('vehicle_kind,base_fare,per_km').eq('active',true) : null,
+        p.role==='passenger' ? db.from('saved_rides').select('ride_id,rides(*)')
+          .eq('user_id',id).order('created_at',{ascending:false}).limit(25) : null
+      ]);
+      if (!inboxResult.error) setNotifications(inboxResult.data || []);
+      if (pricingResult && !pricingResult.error) setPricing(pricingResult.data || []);
+      if (savedResult && !savedResult.error) setSavedRides((savedResult.data || []).map(row=>row.rides).filter(Boolean));
 
     } catch(e) {
       E(e.message);
@@ -434,6 +499,14 @@ function Main() {
         H([]);
         SD(null);
         SV([]);
+        setNotifications([]);
+        setSavedRides([]);
+        setPricing([]);
+        setNearbyAnchor(null);
+        setFocusedRide(null);
+        setOpenedPhoto(null);
+        clearRideDraft();
+        D('home');
         L(false);
       }
     });
@@ -467,6 +540,9 @@ function Main() {
       },refresh)
       .on('postgres_changes',{
         event:'*',schema:'public',table:'ride_offers'
+      },refresh)
+      .on('postgres_changes',{
+        event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+session.user.id
       },refresh)
       .subscribe();
 
@@ -578,6 +654,89 @@ function Main() {
       if(error) E(error.message);
     }
     DP(null); SH(false);
+  }
+
+  function clearRideDraft() {
+    A('');
+    B('');
+    AP(null);
+    BP(null);
+    Q('');
+    SEL('pickup');
+    setPickupNote('');
+    setForSomeone(false);
+    setRecipientPhone('+249');
+    setCargoDescription('');
+    setCargoPhoto(null);
+    submittedDraft.current=null;
+  }
+
+  function repeatRide(ride) {
+    clearRideDraft();
+    A(ride.pickup);
+    B(ride.destination);
+    AP(coordinate(ride.pickup_lng,ride.pickup_lat));
+    BP(coordinate(ride.destination_lng,ride.destination_lat));
+    V(ride.vehicle_kind);
+    setPickupNote(ride.pickup_note || '');
+    setCargoDescription(ride.cargo_description || '');
+    MK(key=>key+1);
+    D('home');
+  }
+
+  async function chooseCargoPhoto() {
+    const photo = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes:['images'], quality:0.55, base64:true, allowsEditing:true
+    });
+    if (photo.canceled) return;
+    const image = photo.assets[0];
+    if (!image?.base64 || image.base64.length > 5500000)
+      throw Error('اختر صورة حمولة أصغر من 4 ميغابايت');
+    setCargoPhoto(image);
+  }
+
+  async function viewCargoPhoto(ride) {
+    const photo = check(await db.storage.from('ride-cargo').createSignedUrl(ride.cargo_photo_path,60));
+    setOpenedPhoto({rideId:ride.id,url:photo.signedUrl});
+  }
+
+  async function requestRide() {
+    if (!pickupPoint || !destPoint) throw Error('حدد نقطتي الرحلة على الخريطة');
+    if (!pickup.trim() || !dest.trim()) throw Error('أدخل أسماء المواقع');
+    const fare = price.trim() ? Number(price) : estimate;
+    if (!Number.isFinite(fare) || fare<=0) throw Error('أدخل سعراً صحيحاً');
+    const contact = forSomeone ? recipientPhone.trim() : null;
+    if (forSomeone && !/^\+249\d{9}$/.test(contact)) throw Error('أدخل رقم التواصل بصيغة +249XXXXXXXXX');
+    const cargo = vehicle==='cargo_tuktuk';
+    if (cargo && !cargoDescription.trim()) throw Error('اكتب نوع الحمولة وحجمها');
+    const values = {
+      passenger_id:userId, pickup:pickup.trim(), destination:dest.trim(), vehicle_kind:vehicle,
+      proposed_fare:fare, pickup_lat:pickupPoint[1], pickup_lng:pickupPoint[0],
+      destination_lat:destPoint[1], destination_lng:destPoint[0], distance_km:km,
+      pickup_note:pickupNote.trim() || null, recipient_phone:contact,
+      cargo_description:cargo ? cargoDescription.trim() : null
+    };
+    const photo = cargo ? cargoPhoto : null;
+    const key = JSON.stringify([values,photo?.uri]);
+    if (submittedDraft.current?.key !== key)
+      submittedDraft.current={key,id:Crypto.randomUUID(),photoUploaded:false};
+    const draft = submittedDraft.current;
+    const photoPath = photo ? userId+'/'+draft.id+'.jpg' : null;
+    if (photo && !draft.photoUploaded) {
+      const bytes = Uint8Array.from(atob(photo.base64),char=>char.charCodeAt(0));
+      const {error} = await db.storage.from('ride-cargo').upload(photoPath,bytes.buffer,{contentType:'image/jpeg'});
+      if (error && String(error.statusCode)!=='409') throw error;
+      draft.photoUploaded=true;
+    }
+
+    const {error} = await db.from('rides').insert({...values,id:draft.id,cargo_photo_path:photoPath});
+    if (error) {
+      if (error.code!=='23505') throw error;
+      const existing = check(await db.from('rides').select('id').eq('id',draft.id).maybeSingle());
+      if (!existing) throw error;
+    }
+    clearRideDraft();
+    D('trips');
   }
 
   async function chooseDriverAvatar(){
@@ -727,7 +886,7 @@ function Main() {
               <Text style={s.muted}>وين ماشي اليوم؟</Text>
             </View>
 
-            <View style={s.row}>
+            <View style={[s.row,{flexWrap:'wrap'}]}>
               <Button secondary={tab!=='home'}
                 onPress={()=>D('home')}>الرئيسية</Button>
 
@@ -736,14 +895,44 @@ function Main() {
                 الرحلات
               </Button>
 
-              <Button secondary
+              <Button secondary={tab!=='notifications'}
+                onPress={()=>{D('notifications');refresh();}}>الإشعارات</Button>
+              <Button secondary disabled={busy}
                 onPress={()=>run(async()=>{
                   await stopSharing();
+                  if (driver?.approved && driver?.online) {
+                    await db.from('drivers').update({online:false}).eq('id',userId);
+                  }
+                  await push.unregister().catch(()=>{});
                   check(await db.auth.signOut());
                 })}>خروج</Button>
             </View>
 
-            {activeRide && (
+            {tab==='notifications' && (
+              <View style={s.card}>
+                <Text style={s.title}>إشعارات الرحلات</Text>
+                {!push.enabled && <Button secondary disabled={busy} onPress={()=>run(async()=>{
+                  try {
+                    const enabled=await push.enable();
+                    if (!enabled) { SN('اسمح بإشعارات أركب من إعدادات الهاتف'); return; }
+                    SN('تم تفعيل إشعارات الرحلات');
+                  } catch {
+                    E('تعذر تفعيل إشعارات الهاتف. يمكنك متابعة الإشعارات من هذه الشاشة.');
+                  }
+                })}>تفعيل الإشعارات على الهاتف</Button>}
+                {!notifications.length && <Text style={s.body}>لا توجد إشعارات حالياً</Text>}
+                {notifications.map(item=>(
+                  <TouchableOpacity key={item.id} style={s.tripSummary} disabled={!item.ride_id}
+                    onPress={()=>openRide(item.ride_id)}>
+                    <Text style={s.label}>{item.title}</Text>
+                    <Text style={s.body}>{item.body}</Text>
+                    <Text style={s.body}>{new Date(item.created_at).toLocaleString()}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {activeRide && tab!=='notifications' && (
               <View style={s.card}>
                 <Text style={s.title}>متابعة الرحلة</Text>
 
@@ -753,6 +942,13 @@ function Main() {
                 <View style={s.tripSummary}>
                   <Text style={s.body}>📍 الانطلاق: {activeRide.pickup}</Text>
                   <Text style={s.body}>🏁 الوجهة: {activeRide.destination}</Text>
+                  {!!activeRide.pickup_note && <Text style={s.body}>مكان الالتقاء: {activeRide.pickup_note}</Text>}
+                  {!!activeRide.cargo_description && <Text style={s.body}>الحمولة: {activeRide.cargo_description}</Text>}
+                  {profile.role==='driver' && !!activeRide.recipient_phone && activeStates.includes(activeRide.status) && (
+                    <Button secondary onPress={()=>run(()=>Linking.openURL('tel:'+activeRide.recipient_phone))}>
+                      اتصال بالشخص المنتظر
+                    </Button>
+                  )}
                   <Text style={s.body}>🛺 نوع المركبة: {activeRide.vehicle_kind==='rickshaw'?'ركشة':'تكتك نقل'}</Text>
                   <Text style={s.body}>📏 المسافة: {Number(activeRide.distance_km||0).toFixed(1)} كم تقريباً</Text>
                   <Text style={s.body}>⏱ الزمن المتوقع: {Math.max(3,Math.ceil(Number(activeRide.distance_km||0)*3))} دقيقة تقريباً (تقديري)</Text>
@@ -814,6 +1010,24 @@ function Main() {
              tab==='home' && !activeRide && (
               <View style={s.card}>
                 <Text style={s.title}>احجز مشوارك</Text>
+                {!!savedRides.length && (
+                  <View style={s.tripSummary}>
+                    <Text style={s.label}>المشاوير المحفوظة</Text>
+                    {savedRides.map(ride=>(
+                      <Button key={ride.id} secondary disabled={busy} onPress={()=>repeatRide(ride)}>
+                        {ride.pickup} ← {ride.destination}
+                      </Button>
+                    ))}
+                  </View>
+                )}
+                {nearby.status!=='idle' && (
+                  <View style={s.tripSummary}>
+                    <Text style={s.label}>المركبات المتاحة حول الانطلاق</Text>
+                    <Text style={s.body}>{nearby.status==='ready'
+                      ? '🛺 '+nearbyCount('rickshaw')+' ركشة • 📦 '+nearbyCount('cargo_tuktuk')+' تكتك شحن'
+                      : nearby.status==='loading' ? 'جاري تحديث المركبات القريبة…' : 'تعذر تحميل المركبات القريبة'}</Text>
+                  </View>
+                )}
 
                 <View style={s.row}>
                   <Button secondary={selectPoint!=='pickup'}
@@ -828,6 +1042,8 @@ function Main() {
                 </View>
 
                 <RideMap key={mapKey}
+                  nearby={nearby.rows}
+                  nearbyAnchor={nearbyAnchor}
                   pickup={pickupPoint}
                   destination={destPoint}
                   onSelect={p=>{
@@ -845,6 +1061,7 @@ function Main() {
                   onPress={()=>run(async()=>{
                     const point=await getGPS();
                     AP(point);
+                    setNearbyAnchor(point);
                     A('موقعي الحالي');
                     SEL('dest');
                     MK(v=>v+1);
@@ -855,8 +1072,17 @@ function Main() {
                 <Field label="اسم مكان الانطلاق"
                   value={pickup} onChangeText={A}/>
 
+                <Field label="وصف مكان الالتقاء (اختياري)"
+                  placeholder="مثلاً: بوابة السوق الغربية"
+                  value={pickupNote} onChangeText={setPickupNote} maxLength={240}/>
                 <Field label="اسم الوجهة"
                   value={dest} onChangeText={B}/>
+
+                <Button secondary={!forSomeone} onPress={()=>setForSomeone(value=>!value)}>
+                  {forSomeone?'الطلب لشخص آخر ✓':'اطلب لزول تاني'}
+                </Button>
+                {forSomeone && <Field label="رقم هاتف الشخص المنتظر" value={recipientPhone}
+                  onChangeText={setRecipientPhone} keyboardType="phone-pad" maxLength={13}/>}
 
                 {!!pickupPoint && !!destPoint &&
                   <Text style={s.fare}>
@@ -880,48 +1106,33 @@ function Main() {
                   </Button>
                 </View>
 
-                <Field label="السعر المقترح بالجنيه"
-                  value={price} onChangeText={Q}
-                  keyboardType="numeric"/>
+                {vehicle==='cargo_tuktuk' && (
+                  <View style={s.tripSummary}>
+                    <Field label="نوع الحمولة وحجمها" placeholder="مثلاً: 3 كراتين متوسطة"
+                      value={cargoDescription} onChangeText={setCargoDescription} maxLength={180}/>
+                    <Button secondary disabled={busy} onPress={()=>run(chooseCargoPhoto)}>
+                      {cargoPhoto?'تغيير صورة الحمولة':'إضافة صورة للحمولة (اختياري)'}
+                    </Button>
+                    {cargoPhoto && <>
+                      <Image source={{uri:cargoPhoto.uri}} style={s.cargoPhoto}/>
+                      <Button secondary disabled={busy} onPress={()=>setCargoPhoto(null)}>إزالة الصورة</Button>
+                    </>}
+                  </View>
+                )}
 
-                <Button disabled={busy}
-                  onPress={()=>act(async()=>{
-                    if(!pickupPoint||!destPoint)
-                      throw Error('حدد نقطتي الرحلة على الخريطة');
+                {estimate!==null && <Text style={s.fare}>الأجرة التقديرية: {estimate} ج.س</Text>}
+                {estimate===null && pickupPoint && destPoint &&
+                  <Text style={s.body}>التقدير التلقائي غير متاح لهذه المركبة. أدخل أجرة مقترحة.</Text>}
+                <Field label="الأجرة المقترحة بالجنيه" value={price} onChangeText={Q}
+                  placeholder={estimate===null?undefined:String(estimate)} keyboardType="numeric"/>
 
-                    if(!pickup.trim()||!dest.trim())
-                      throw Error('أدخل أسماء المواقع');
-
-                    if(!Number.isFinite(Number(price))||
-                      Number(price)<=0)
-                      throw Error('أدخل سعراً صحيحاً');
-
-                    check(await db.from('rides').insert({
-                      passenger_id:session.user.id,
-                      pickup:pickup.trim(),
-                      destination:dest.trim(),
-                      vehicle_kind:vehicle,
-                      proposed_fare:Number(price),
-                      pickup_lat:pickupPoint[1],
-                      pickup_lng:pickupPoint[0],
-                      destination_lat:destPoint[1],
-                      destination_lng:destPoint[0],
-                      distance_km:km
-                    }));
-
-                    A('');
-                    B('');
-                    AP(null);
-                    BP(null);
-                    Q('');
-                    D('trips');
-                  })}>
+                <Button disabled={busy} onPress={()=>act(requestRide)}>
                   اطلب مشوارك
                 </Button>
               </View>
             )}
 
-            {profile.role==='driver' && (
+            {profile.role==='driver' && tab==='home' && (
               <View style={s.card}>
                 <Text style={s.title}>حساب الكابتن</Text>
 
@@ -949,10 +1160,15 @@ function Main() {
 
                     {driver.approved &&
                       <Button disabled={busy}
-                        onPress={()=>act(()=>db.from('drivers')
-                          .update({online:!driver.online})
-                          .eq('id',session.user.id)
-                          .then(check))}>
+                        onPress={()=>act(async()=>{
+                          if (!driver.online) {
+                            const point=await getGPS();
+                            check(await db.from('driver_locations').upsert({
+                              driver_id:userId,latitude:point[1],longitude:point[0],updated_at:new Date().toISOString()
+                            }));
+                          }
+                          check(await db.from('drivers').update({online:!driver.online}).eq('id',userId));
+                        })}>
                         {driver.online?'إيقاف استقبال الطلبات':
                          'استقبال الطلبات'}
                       </Button>}
@@ -992,12 +1208,13 @@ function Main() {
               </View>
             )}
 
+            {tab!=='notifications' && <>
             <Text style={s.title}>الرحلات</Text>
 
             {!trips.length &&
               <Text style={s.body}>لا توجد رحلات حالياً</Text>}
 
-            {trips.map(t=>(
+            {orderedTrips.map(t=>(
               <View key={t.id} style={s.card}>
                 <Text style={s.label}>
                   {states[t.status]}
@@ -1010,6 +1227,26 @@ function Main() {
                 <Text style={s.fare}>
                   {t.agreed_fare??t.proposed_fare} ج.س
                 </Text>
+                {!!t.pickup_note && <Text style={s.body}>مكان الالتقاء: {t.pickup_note}</Text>}
+                {!!t.cargo_description && <Text style={s.body}>الحمولة: {t.cargo_description}</Text>}
+                {!!t.cargo_photo_path && (
+                  openedPhoto?.rideId===t.id ? (
+                    <Image source={{uri:openedPhoto.url}} style={s.cargoPhoto}
+                      onError={()=>setOpenedPhoto(current=>current?.rideId===t.id?null:current)}/>
+                  ) : <Button secondary disabled={busy} onPress={()=>run(()=>viewCargoPhoto(t))}>عرض صورة الحمولة</Button>
+                )}
+                {profile.role==='passenger' && ['completed','cancelled'].includes(t.status) && (
+                  <View style={s.row}>
+                    <Button secondary disabled={busy||!!activeRide} onPress={()=>repeatRide(t)}>إعادة الطلب</Button>
+                    <Button secondary disabled={busy} onPress={()=>act(async()=>{
+                      if (savedRides.some(ride=>ride.id===t.id)) {
+                        check(await db.from('saved_rides').delete().eq('user_id',userId).eq('ride_id',t.id));
+                      } else {
+                        check(await db.from('saved_rides').insert({ride_id:t.id}));
+                      }
+                    })}>{savedRides.some(ride=>ride.id===t.id)?'إزالة من المحفوظات':'حفظ المشوار'}</Button>
+                  </View>
+                )}
                 {profile.role==='passenger' && t.status==='completed' && !ratedRides.includes(t.id) && (
                   <View style={s.rateBox}>
                     <Text style={s.label}>قيّم تجربتك مع الكابتن</Text>
@@ -1095,10 +1332,11 @@ function Main() {
                 )}
               </View>
             ))}
+            </>}
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • v0.5</Text>
+        <Text style={s.footer}>ARKAB • v0.6</Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -1113,6 +1351,7 @@ export default function App(){
 }
 
 const s=StyleSheet.create({
+  cargoPhoto:{width:'100%',height:160,borderRadius:12,resizeMode:'contain'},
   safe:{
     flex:1,
     backgroundColor:'#F8F7F2'
