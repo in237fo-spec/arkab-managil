@@ -1,9 +1,10 @@
 import 'react-native-url-polyfill/auto';
-import React, {useState, useEffect, useRef} from 'react';
+import React, {useState, useEffect, useRef, useCallback} from 'react';
+import SplashIntro from './SplashIntro';
 import {
   View, Text, TextInput, TouchableOpacity,
   ScrollView, Image, StyleSheet,
-  ActivityIndicator, StatusBar, AppState, Linking, Alert, Share, Pressable
+  ActivityIndicator, StatusBar, AppState, Linking, Alert, Share, Pressable, Platform
 } from 'react-native';
 import {SafeAreaProvider, SafeAreaView}
   from 'react-native-safe-area-context';
@@ -91,6 +92,14 @@ const states = {
 const activeStates = [
   'accepted', 'arrived', 'in_progress'
 ];
+
+function rideErrorMessage(error) {
+  const message = error?.message || 'تعذر الاتصال';
+  if (/ride unavailable|ride not found|ride is not available|offer unavailable|offer not found/i.test(message)) {
+    return 'الرحلة أو العرض لم يعد متاحاً. تم طلب تحديث الحالة؛ راجع تفاصيل الرحلة وحاول مرة أخرى.';
+  }
+  return message;
+}
 
 function check({data,error}) {
   if (error) throw error;
@@ -390,6 +399,7 @@ function Main() {
   const [notice,SN] = useState('');
 
   const [activeRide,AR] = useState(null);
+  const refreshSequence = useRef(0);
   const previousActive = useRef(null);
   useEffect(()=>{
     if(profile?.role==='passenger' && previousActive.current && !activeRide) D('home');
@@ -474,7 +484,7 @@ function Main() {
     try {
       await fn();
     } catch(e) {
-      E(e.message || 'تعذر الاتصال');
+      E(rideErrorMessage(e));
     } finally {
       K(false);
     }
@@ -526,6 +536,8 @@ function Main() {
 
   async function refresh() {
     if (!session) return;
+    const seq = ++refreshSequence.current;
+    const current = () => seq === refreshSequence.current;
 
     try {
       const id=session.user.id;
@@ -533,14 +545,24 @@ function Main() {
       const p=check(await db.from('profiles')
         .select('*').eq('id',id).maybeSingle());
 
+      if (!current()) return;
       P(p);
 
       if (!p) return;
 
-      const own=check(await db.from('rides')
-        .select('*')
-        .order('created_at',{ascending:false})
-        .limit(50));
+      const ownerColumn = p.role==='passenger' ? 'passenger_id' : 'driver_id';
+      const [historyResult,activeResult] = await Promise.all([
+        db.from('rides').select('*').eq(ownerColumn,id)
+          .order('created_at',{ascending:false}).limit(50),
+        db.from('rides').select('*').eq(ownerColumn,id)
+          .in('status',p.role==='passenger' ? ['requested',...activeStates] : activeStates)
+          .order('created_at',{ascending:false}).limit(1).maybeSingle()
+      ]);
+      const history=check(historyResult);
+      const active=check(activeResult);
+      if (!current()) return;
+      const own=active ? [active,...history.filter(r=>r.id!==active.id)] : history;
+      AR(active || null);
 
       let available=[];
 
@@ -548,10 +570,10 @@ function Main() {
         const d=check(await db.from('drivers')
           .select('*').eq('id',id).maybeSingle());
 
-        SD(d);
-
-        SV(check(await db.from('vehicles')
-          .select('*').eq('driver_id',id)));
+        const ownVehicles=check(await db.from('vehicles')
+          .select('*').eq('driver_id',id));
+        if (!current()) return;
+        SD(d); SV(ownVehicles);
 
         if (d?.approved && d?.online) {
           available=check(
@@ -560,25 +582,23 @@ function Main() {
         }
       }
 
+      if (!current()) return;
       U([
         ...own,
         ...available.filter(r=>
           !own.some(o=>o.id===r.id))
       ]);
 
-      H(check(await db.from('ride_offers')
+      const freshOffers=check(await db.from('ride_offers')
         .select('*')
         .order('created_at',{ascending:false})
-        .limit(100)));
-
-      const active=own.find(r=>
-        activeStates.includes(r.status) || (p.role==='passenger' && r.status==='requested')
-      );
-
-      AR(active || null);
+        .limit(100));
+      if (!current()) return;
+      H(freshOffers);
       if (p.role==='driver') {
         const running=await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>false);
         const storedRideId=await SecureStore.getItemAsync(ACTIVE_RIDE_KEY);
+        if (!current()) return;
         if(running && (!active || active.driver_id!==id || storedRideId!==active.id)) {
           await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
           await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
@@ -588,9 +608,11 @@ function Main() {
       if (active?.driver_id) {
         const dp = check(await db.from('profiles').select('id,full_name,contact_phone,avatar_url').eq('id',active.driver_id).maybeSingle());
         const dv = check(await db.from('vehicles').select('kind,plate').eq('driver_id',active.driver_id).eq('approved',true).eq('kind',active.vehicle_kind).limit(2));
+        if (!current()) return;
         ADR(dp); AV(dv?.length===1?dv[0]:null);
       } else { ADR(null); AV(null); }
       const ratings = check(await db.from('ratings').select('ride_id').eq('passenger_id',id));
+      if (!current()) return;
       RR((ratings||[]).map(x=>x.ride_id));
 
       const [inboxResult,pricingResult,savedResult] = await Promise.all([
@@ -600,20 +622,26 @@ function Main() {
         p.role==='passenger' ? db.from('saved_rides').select('ride_id,rides(*)')
           .eq('user_id',id).order('created_at',{ascending:false}).limit(25) : null
       ]);
+      if (!current()) return;
       if (!inboxResult.error) setNotifications(inboxResult.data || []);
       if (pricingResult && !pricingResult.error) setPricing(pricingResult.data || []);
       if (savedResult && !savedResult.error) setSavedRides((savedResult.data || []).map(row=>row.rides).filter(Boolean));
 
     } catch(e) {
-      E(e.message);
+      if (current()) E(rideErrorMessage(e));
     } finally {
-      L(false);
+      if (current()) L(false);
     }
   }
 
   const act=fn=>run(async()=>{
-    await fn();
-    await refresh();
+    try {
+      await fn();
+    } finally {
+      // Even when a stale offer or request is rejected, reconcile with the
+      // authoritative server status rather than leaving the old card visible.
+      await refresh();
+    }
   });
 
   const rpc=(name,args)=>
@@ -630,6 +658,7 @@ function Main() {
       S(v);
 
       if(!v){
+        refreshSequence.current++;
         stopTracking();
         Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
         SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY).catch(()=>{});
@@ -675,6 +704,9 @@ function Main() {
     refresh();
 
     const timer=setInterval(refresh,12000);
+    const foreground=AppState.addEventListener('change',state=>{
+      if(state==='active') refresh();
+    });
 
     const channel=db.channel('arkab-'+session.user.id)
       .on('postgres_changes',{
@@ -689,7 +721,9 @@ function Main() {
       .subscribe();
 
     return ()=>{
+      refreshSequence.current++;
       clearInterval(timer);
+      foreground.remove();
       db.removeChannel(channel);
     };
   },[session?.user.id]);
@@ -978,7 +1012,7 @@ function Main() {
 
   return (
     <SafeAreaView style={s.safe}>
-      <StatusBar barStyle="dark-content"/>
+      <StatusBar barStyle="dark-content" backgroundColor={theme.background}/>
 
       <View style={s.fixedHeader}>
         <View style={s.headerBrand}>
@@ -1642,7 +1676,7 @@ function Main() {
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • تصميم v0.7</Text>
+        <Text style={s.footer}>ARKAB • v0.7.1</Text>
       </ScrollView>
       {!!session && !!profile && <TabBar tab={tab} isDriver={profile.role==='driver'}
         onChange={key=>{D(key);if(key==='trips'||key==='notifications')refresh();}}/>}
@@ -1651,9 +1685,14 @@ function Main() {
 }
 
 export default function App(){
+  const [intro,setIntro] = useState(true);
+  const finishIntro = useCallback(()=>setIntro(false),[]);
   return (
     <SafeAreaProvider>
-      <Main/>
+      <View style={{flex:1,backgroundColor:G}}>
+        <Main/>
+        {intro&&<SplashIntro onFinish={finishIntro}/>}
+      </View>
     </SafeAreaProvider>
   );
 }
