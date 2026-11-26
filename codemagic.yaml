@@ -1,0 +1,68 @@
+workflows:
+  arkab-android-apk:
+    name: ARKAB Android signed APK
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: 22.16.0
+      java: 17
+      android_signing:
+        - arkab-release
+      groups:
+        - arkab_firebase
+      vars:
+        ARKAB_BUILD_TARGET: apk
+    scripts:
+      - name: Validate signing and Firebase configuration
+        script: |
+          bash scripts/codemagic-android.sh configure
+      - name: Install pinned dependencies
+        script: |
+          npm ci --no-audit --no-fund
+      - name: Run regression checks
+        script: |
+          node scripts/verify-startup-v091.mjs
+          node scripts/verify-pricing.mjs
+          node scripts/verify-account-deletion.mjs
+          node scripts/verify-production-sync.mjs
+          node scripts/verify-push-retry.mjs
+      - name: Generate native Android and build signed APK
+        script: |
+          bash scripts/codemagic-android.sh build
+    artifacts:
+      - artifacts/*.apk
+      - artifacts/*.sha256
+
+  arkab-android-store:
+    name: ARKAB Android signed AAB (Google Play)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: 22.16.0
+      java: 17
+      android_signing:
+        - arkab-release
+      groups:
+        - arkab_firebase
+      vars:
+        ARKAB_BUILD_TARGET: aab
+    scripts:
+      - name: Validate signing and Firebase configuration
+        script: |
+          bash scripts/codemagic-android.sh configure
+      - name: Install pinned dependencies
+        script: |
+          npm ci --no-audit --no-fund
+      - name: Run regression checks
+        script: |
+          node scripts/verify-startup-v091.mjs
+          node scripts/verify-pricing.mjs
+          node scripts/verify-account-deletion.mjs
+          node scripts/verify-production-sync.mjs
+          node scripts/verify-push-retry.mjs
+      - name: Generate native Android and build signed AAB
+        script: |
+          bash scripts/codemagic-android.sh build
+    artifacts:
+      - artifacts/*.aab
+      - artifacts/*.sha256

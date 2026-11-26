@@ -5,3 +5,10 @@ node_modules/
 google-services.json
 
 supabase/.temp/
+
+# Private signing credentials and generated CI files
+*.jks
+*.keystore
+credentials.json
+android/
+artifacts/
