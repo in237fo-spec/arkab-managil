@@ -44,12 +44,18 @@ Deno.serve(async request=>{
   if (!data?.length) return new Response(null,{status:204});
 
   try {
-    const response=await fetch('https://exp.host/--/api/v2/push/send',{
+    const send=()=>fetch('https://exp.host/--/api/v2/push/send',{
       method:'POST',
       headers:{'Content-Type':'application/json','Accept':'application/json'},
       body:JSON.stringify(data),
       signal:AbortSignal.timeout(10000)
     });
+    let response=await send();
+    if(response.status===429){
+      await response.body?.cancel();
+      await new Promise(resolve=>setTimeout(resolve,1000));
+      response=await send();
+    }
     if (!response.ok) {
       console.error('Expo push send returned HTTP',response.status);
       return new Response(null,{status:502});
