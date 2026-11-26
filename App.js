@@ -3,7 +3,7 @@ import React, {useState, useEffect, useRef} from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   ScrollView, Image, StyleSheet,
-  ActivityIndicator, StatusBar, AppState, Linking, Alert
+  ActivityIndicator, StatusBar, AppState, Linking, Alert, Share, Pressable
 } from 'react-native';
 import {SafeAreaProvider, SafeAreaView}
   from 'react-native-safe-area-context';
@@ -16,8 +16,14 @@ import {coordinate,estimateFare,useNearbyVehicles,useAvailableDriverLocation,use
 import {Map, Camera, Marker} from '@maplibre/maplibre-react-native';
 import {createClient} from '@supabase/supabase-js';
 
-const G = '#06432D';
-const Y = '#FFB600';
+const theme = {
+  green:'#086B47', deep:'#034735', gold:'#E9B949', background:'#F7F6F2',
+  surface:'#FFFFFF', soft:'#EAF4EE', ink:'#152C23', muted:'#52695E',
+  border:'#DEE7E1', danger:'#A22D2D', warning:'#FFF4D6',
+  radius:{sm:12,md:16,lg:22}, space:{xs:4,sm:8,md:16,lg:24}
+};
+const G = theme.green;
+const Y = theme.gold;
 const CENTER = [32.98, 14.25];
 
 const db = createClient(
@@ -92,17 +98,51 @@ function check({data,error}) {
 
 function Button({children,onPress,secondary,disabled}) {
   return (
-    <TouchableOpacity
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{disabled:!!disabled}}
       disabled={disabled}
       onPress={onPress}
-      style={[
-        s.button,
-        secondary && s.secondary,
-        disabled && {opacity:0.5}
+      style={({pressed})=>[
+        s.button, secondary && s.secondary,
+        (disabled || pressed) && {opacity:disabled?0.5:0.82}
       ]}>
-      <Text style={s.buttonText}>{children}</Text>
-    </TouchableOpacity>
+      <Text style={[s.buttonText,secondary && s.secondaryText]}>{children}</Text>
+    </Pressable>
   );
+}
+
+function TabBar({tab,onChange,isDriver}) {
+  const items = [
+    ['home','⌂',isDriver?'الرئيسية':'الرئيسية'],
+    ['trips','≡','رحلاتي'],
+    ['wallet','▣','الدفع'],
+    ['notifications','◉','التنبيهات'],
+    ['account','●','حسابي']
+  ];
+  return <View style={s.tabBar}>
+    {items.map(([key,icon,label])=>(
+      <Pressable key={key} accessibilityRole="tab" accessibilityLabel={label}
+        accessibilityState={{selected:tab===key}} onPress={()=>onChange(key)}
+        style={({pressed})=>[s.tabItem,tab===key&&s.tabActive,pressed&&{opacity:0.75}]}>
+        <Text style={[s.tabIcon,tab===key&&s.tabSelected]}>{icon}</Text>
+        <Text style={[s.tabLabel,tab===key&&s.tabSelected]}>{label}</Text>
+      </Pressable>
+    ))}
+  </View>;
+}
+
+function VehicleChoice({kind,selected,onPress}) {
+  const cargo=kind==='cargo_tuktuk';
+  return <Pressable accessibilityRole="radio" accessibilityState={{checked:selected}}
+    accessibilityLabel={cargo?'تكتك نقل':'ركشة'} onPress={onPress}
+    style={({pressed})=>[s.vehicleChoice,selected&&s.vehicleSelected,pressed&&{opacity:0.8}]}>
+    <View style={s.vehicleTop}><Text style={s.vehicleGlyph}>{cargo?'▣':'🛺'}</Text>
+      <View style={[s.radio,selected&&s.radioSelected]}>{selected&&<View style={s.radioDot}/>}</View>
+    </View>
+    <Text style={s.label}>{cargo?'تكتك نقل':'ركشة'}</Text>
+    <Text style={s.caption}>{cargo?'لنقل الأغراض والحمولات':'للمشاوير اليومية'}</Text>
+  </Pressable>;
 }
 
 function Field({
@@ -119,6 +159,8 @@ function Field({
         keyboardType={keyboardType}
         secureTextEntry={secure}
         placeholder={placeholder}
+        placeholderTextColor={theme.muted}
+        accessibilityLabel={label}
         maxLength={maxLength}
         autoCapitalize="none"
         autoCorrect={false}
@@ -758,22 +800,23 @@ function Main() {
     <SafeAreaView style={s.safe}>
       <StatusBar barStyle="dark-content"/>
 
+      <View style={s.fixedHeader}>
+        <View style={s.headerBrand}>
+          <Image source={require('./assets/logo.png')} style={s.logo}/>
+          <View style={{gap:2}}>
+            <Text style={s.brand}>أركب | ARKAB</Text>
+            <Text style={s.muted}>المناقل • مشوارك بقى أسهل</Text>
+          </View>
+        </View>
+        {session && profile && <Pressable accessibilityRole="button" accessibilityLabel="الإشعارات"
+          style={s.headerAction} onPress={()=>{D('notifications');refresh();}}>
+          <Text style={s.headerActionText}>التنبيهات</Text>
+        </Pressable>}
+      </View>
       <ScrollView
+        style={{flex:1}}
         contentContainerStyle={s.page}
         keyboardShouldPersistTaps="handled">
-
-        <View style={s.header}>
-          <View>
-            <Text style={s.brand}>أركب | ARKAB</Text>
-            <Text style={s.muted}>
-              المناقل • مشوارك بقى أسهل
-            </Text>
-          </View>
-
-          <Image
-            source={require('./assets/logo.png')}
-            style={s.logo}/>
-        </View>
 
         {!!err && <Text style={s.error}>{err}</Text>}
         {!!notice && <Text style={s.success}>{notice}</Text>}
@@ -879,34 +922,66 @@ function Main() {
 
         ):session && profile ? (
           <>
-            <View style={s.hero}>
-              <Text style={s.heroTitle}>
-                أهلاً {profile.full_name}
-              </Text>
-              <Text style={s.muted}>وين ماشي اليوم؟</Text>
-            </View>
+            {tab==='home' && <View style={s.welcome}>
+              <View style={{flex:1}}>
+                <Text style={s.eyebrow}>{profile.role==='driver'?'لوحة الكابتن':'مرحباً بك'}</Text>
+                <Text style={s.title}>أهلاً {profile.full_name}</Text>
+                <Text style={s.body}>{profile.role==='driver'?'تابع طلباتك ومركبتك':'وين ماشي اليوم؟'}</Text>
+              </View>
+              <View style={s.brandBadge}><Text style={s.brandBadgeText}>أ</Text></View>
+            </View>}
 
-            <View style={[s.row,{flexWrap:'wrap'}]}>
-              <Button secondary={tab!=='home'}
-                onPress={()=>D('home')}>الرئيسية</Button>
+            {tab==='account' && <View style={s.card}>
+              <View style={s.driverCard}>
+                {profile.avatar_url ? <Image source={{uri:profile.avatar_url}} style={s.driverAvatar}/> :
+                  <View style={s.driverAvatarFallback}><Text style={s.driverInitial}>{(profile.full_name||'أ').slice(0,1)}</Text></View>}
+                <View style={{flex:1,gap:4}}>
+                  <Text style={s.title}>{profile.full_name}</Text>
+                  <Text style={s.body}>{profile.role==='driver'?'حساب كابتن':'حساب راكب'}</Text>
+                </View>
+              </View>
+              <Text style={s.label}>بيانات التواصل</Text>
+              <Text style={s.body}>{profile.contact_phone||'لا يوجد رقم مسجل'}</Text>
+              <Text style={s.body}>{session.user.email}</Text>
+              {profile.role==='driver' && <Button secondary onPress={()=>D('home')}>إدارة المركبة وحساب الكابتن</Button>}
+              <Button secondary disabled={busy} onPress={()=>run(async()=>{
+                await stopSharing();
+                if(driver?.approved && driver?.online) {
+                  await db.from('drivers').update({online:false}).eq('id',userId);
+                }
+                await push.unregister().catch(()=>{});
+                check(await db.auth.signOut());
+              })}>تسجيل الخروج</Button>
+            </View>}
 
-              <Button secondary={tab!=='trips'}
-                onPress={()=>{D('trips');refresh();}}>
-                الرحلات
-              </Button>
-
-              <Button secondary={tab!=='notifications'}
-                onPress={()=>{D('notifications');refresh();}}>الإشعارات</Button>
-              <Button secondary disabled={busy}
-                onPress={()=>run(async()=>{
-                  await stopSharing();
-                  if (driver?.approved && driver?.online) {
-                    await db.from('drivers').update({online:false}).eq('id',userId);
-                  }
-                  await push.unregister().catch(()=>{});
-                  check(await db.auth.signOut());
-                })}>خروج</Button>
-            </View>
+            {tab==='wallet' && <>
+              <View style={s.walletHero}>
+                <Text style={s.walletEyebrow}>أركب • الدفع</Text>
+                <Text style={s.walletTitle}>طرق الدفع</Text>
+                <Text style={s.walletText}>اختر الطريقة المتاحة عند تسوية مشوارك.</Text>
+              </View>
+              <View style={s.card}>
+                <Text style={s.title}>خيارات الدفع</Text>
+                <View style={s.paymentRow}>
+                  <View style={s.paymentIcon}><Text style={s.paymentSymbol}>✓</Text></View>
+                  <View style={{flex:1,gap:3}}>
+                    <Text style={s.label}>نقداً</Text>
+                    <Text style={s.caption}>تسوية الأجرة مع الكابتن مباشرة</Text>
+                  </View>
+                  <Text style={s.badge}>متاح</Text>
+                </View>
+                <View style={s.paymentRow}>
+                  <View style={[s.paymentIcon,{backgroundColor:theme.warning}]}><Text style={s.paymentSymbol}>▣</Text></View>
+                  <View style={{flex:1,gap:3}}>
+                    <Text style={s.label}>ماي كاشي</Text>
+                    <Text style={s.caption}>بانتظار تفعيل الربط الرسمي</Text>
+                  </View>
+                  <Text style={s.pendingBadge}>قريباً</Text>
+                </View>
+                <Text style={s.caption}>لا توجد محفظة أموال أو مدفوعات إلكترونية مفعّلة حالياً.</Text>
+                <Button secondary onPress={()=>D('trips')}>عرض سجل الرحلات</Button>
+              </View>
+            </>}
 
             {tab==='notifications' && (
               <View style={s.card}>
@@ -932,13 +1007,11 @@ function Main() {
               </View>
             )}
 
-            {activeRide && tab!=='notifications' && (
+            {activeRide && ['home','trips'].includes(tab) && (
               <View style={s.card}>
                 <Text style={s.title}>متابعة الرحلة</Text>
 
-                <Text style={s.body}>
-                  {states[activeRide.status]}
-                </Text>
+                <Text style={s.badge}>{states[activeRide.status]}</Text>
                 <View style={s.tripSummary}>
                   <Text style={s.body}>📍 الانطلاق: {activeRide.pickup}</Text>
                   <Text style={s.body}>🏁 الوجهة: {activeRide.destination}</Text>
@@ -1000,8 +1073,14 @@ function Main() {
                     </Button>
                   </>
                 )}
+                {profile.role==='passenger' && <Button secondary onPress={()=>run(()=>Share.share({
+                  message:'رحلتي عبر أركب | '+activeRide.pickup+' إلى '+activeRide.destination+' | الحالة: '+states[activeRide.status]
+                }))}>مشاركة تفاصيل الرحلة</Button>}
                 {profile.role==='passenger' && ['requested','accepted','arrived'].includes(activeRide.status) && (
-                  <Button secondary disabled={busy} onPress={()=>act(()=>rpc('advance_ride',{p_ride:activeRide.id,p_status:'cancelled'}))}>إلغاء الرحلة</Button>
+                  <Button secondary disabled={busy} onPress={()=>Alert.alert('إلغاء الرحلة','هل تريد إلغاء هذه الرحلة؟',[
+                    {text:'العودة',style:'cancel'},
+                    {text:'إلغاء الرحلة',style:'destructive',onPress:()=>act(()=>rpc('advance_ride',{p_ride:activeRide.id,p_status:'cancelled'}))}
+                  ])}>إلغاء الرحلة</Button>
                 )}
               </View>
             )}
@@ -1009,26 +1088,8 @@ function Main() {
             {profile.role==='passenger' &&
              tab==='home' && !activeRide && (
               <View style={s.card}>
-                <Text style={s.title}>احجز مشوارك</Text>
-                {!!savedRides.length && (
-                  <View style={s.tripSummary}>
-                    <Text style={s.label}>المشاوير المحفوظة</Text>
-                    {savedRides.map(ride=>(
-                      <Button key={ride.id} secondary disabled={busy} onPress={()=>repeatRide(ride)}>
-                        {ride.pickup} ← {ride.destination}
-                      </Button>
-                    ))}
-                  </View>
-                )}
-                {nearby.status!=='idle' && (
-                  <View style={s.tripSummary}>
-                    <Text style={s.label}>المركبات المتاحة حول الانطلاق</Text>
-                    <Text style={s.body}>{nearby.status==='ready'
-                      ? '🛺 '+nearbyCount('rickshaw')+' ركشة • 📦 '+nearbyCount('cargo_tuktuk')+' تكتك شحن'
-                      : nearby.status==='loading' ? 'جاري تحديث المركبات القريبة…' : 'تعذر تحميل المركبات القريبة'}</Text>
-                  </View>
-                )}
-
+                <Text style={s.title}>إلى أين؟</Text>
+                <Text style={s.caption}>حدد نقطة الانطلاق والوجهة على الخريطة.</Text>
                 <View style={s.row}>
                   <Button secondary={selectPoint!=='pickup'}
                     onPress={()=>SEL('pickup')}>
@@ -1069,6 +1130,25 @@ function Main() {
                   📍 استخدام موقعي الحالي
                 </Button>
 
+                {!!savedRides.length && (
+                  <View style={s.tripSummary}>
+                    <Text style={s.label}>المشاوير المحفوظة</Text>
+                    {savedRides.map(ride=>(
+                      <Button key={ride.id} secondary disabled={busy} onPress={()=>repeatRide(ride)}>
+                        {ride.pickup} ← {ride.destination}
+                      </Button>
+                    ))}
+                  </View>
+                )}
+                {nearby.status!=='idle' && (
+                  <View style={s.tripSummary}>
+                    <Text style={s.label}>المركبات المتاحة حول الانطلاق</Text>
+                    <Text style={s.body}>{nearby.status==='ready'
+                      ? '🛺 '+nearbyCount('rickshaw')+' ركشة • 📦 '+nearbyCount('cargo_tuktuk')+' تكتك شحن'
+                      : nearby.status==='loading' ? 'جاري تحديث المركبات القريبة…' : 'تعذر تحميل المركبات القريبة'}</Text>
+                  </View>
+                )}
+
                 <Field label="اسم مكان الانطلاق"
                   value={pickup} onChangeText={A}/>
 
@@ -1094,16 +1174,10 @@ function Main() {
                   وليست مسافة الطريق الفعلية.
                 </Text>
 
+                <Text style={s.label}>اختر نوع المركبة</Text>
                 <View style={s.row}>
-                  <Button secondary={vehicle!=='rickshaw'}
-                    onPress={()=>V('rickshaw')}>
-                    🛺 ركشة
-                  </Button>
-
-                  <Button secondary={vehicle!=='cargo_tuktuk'}
-                    onPress={()=>V('cargo_tuktuk')}>
-                    تكتك نقل
-                  </Button>
+                  <VehicleChoice kind="rickshaw" selected={vehicle==='rickshaw'} onPress={()=>V('rickshaw')}/>
+                  <VehicleChoice kind="cargo_tuktuk" selected={vehicle==='cargo_tuktuk'} onPress={()=>V('cargo_tuktuk')}/>
                 </View>
 
                 {vehicle==='cargo_tuktuk' && (
@@ -1135,6 +1209,11 @@ function Main() {
             {profile.role==='driver' && tab==='home' && (
               <View style={s.card}>
                 <Text style={s.title}>حساب الكابتن</Text>
+                {driver?.approved && <View style={s.driverStats}>
+                  <Text style={s.badge}>{driver.online?'متصل • متاح للطلبات':'غير متصل'}</Text>
+                  <Text style={s.caption}>الرحلات المكتملة ضمن آخر 50 رحلة</Text>
+                  <Text style={s.fare}>{trips.filter(t=>t.status==='completed'&&t.driver_id===userId).length} رحلة</Text>
+                </View>}
 
                 {!driver ? (
                   <Button disabled={busy}
@@ -1208,17 +1287,15 @@ function Main() {
               </View>
             )}
 
-            {tab!=='notifications' && <>
-            <Text style={s.title}>الرحلات</Text>
+            {(tab==='trips' || (tab==='home' && (profile.role==='driver' || activeRide?.status==='requested'))) && <>
+            <Text style={s.title}>{tab==='home' && profile.role==='driver'?'الطلبات والرحلات':'رحلاتي'}</Text>
 
             {!trips.length &&
               <Text style={s.body}>لا توجد رحلات حالياً</Text>}
 
             {orderedTrips.map(t=>(
               <View key={t.id} style={s.card}>
-                <Text style={s.label}>
-                  {states[t.status]}
-                </Text>
+                <Text style={t.status==='cancelled'?s.pendingBadge:s.badge}>{states[t.status]||t.status}</Text>
 
                 <Text style={s.title}>
                   {t.pickup} ← {t.destination}
@@ -1336,8 +1413,10 @@ function Main() {
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • v0.6</Text>
+        <Text style={s.footer}>ARKAB • تصميم v0.7</Text>
       </ScrollView>
+      {!!session && !!profile && <TabBar tab={tab} isDriver={profile.role==='driver'}
+        onChange={key=>{D(key);if(key==='trips'||key==='notifications')refresh();}}/>}
     </SafeAreaView>
   );
 }
@@ -1351,173 +1430,72 @@ export default function App(){
 }
 
 const s=StyleSheet.create({
-  cargoPhoto:{width:'100%',height:160,borderRadius:12,resizeMode:'contain'},
-  safe:{
-    flex:1,
-    backgroundColor:'#F8F7F2'
-  },
-  page:{
-    padding:16,
-    gap:16,
-    paddingBottom:32
-  },
-  header:{
-    flexDirection:'row',
-    justifyContent:'space-between',
-    alignItems:'center',
-    backgroundColor:G,
-    padding:18,
-    borderRadius:22
-  },
-  logo:{
-    width:74,
-    height:74,
-    borderRadius:12,
-    resizeMode:'contain',
-    backgroundColor:'#fff'
-  },
-  brand:{
-    color:'#fff',
-    fontSize:25,
-    fontWeight:'900'
-  },
-  muted:{
-    color:'#E3EDE7',
-    textAlign:'right'
-  },
-  card:{
-    backgroundColor:'#fff',
-    padding:16,
-    gap:12,
-    borderRadius:20,
-    borderWidth:1,
-    borderColor:'#E1E7E0'
-  },
-  hero:{
-    backgroundColor:G,
-    padding:22,
-    borderRadius:20,
-    gap:8
-  },
-  heroTitle:{
-    color:Y,
-    fontSize:26,
-    fontWeight:'bold',
-    textAlign:'right'
-  },
-  title:{
-    color:G,
-    fontSize:22,
-    fontWeight:'bold',
-    textAlign:'right'
-  },
-  label:{
-    color:G,
-    fontSize:15,
-    fontWeight:'600',
-    textAlign:'right'
-  },
-  body:{
-    color:'#385246',
-    fontSize:15,
-    textAlign:'right',
-    lineHeight:23
-  },
-  input:{
-    backgroundColor:'#F1F5F0',
-    borderRadius:12,
-    padding:14,
-    minHeight:52,
-    textAlign:'right',
-    color:'#19251F',
-    fontSize:16,
-    borderWidth:1,
-    borderColor:'#DCE5DC'
-  },
-  button:{
-    backgroundColor:Y,
-    padding:14,
-    minHeight:48,
-    borderRadius:13,
-    alignItems:'center',
-    justifyContent:'center',
-    flexGrow:1
-  },
-  secondary:{
-    backgroundColor:'#E4EFE8'
-  },
-  buttonText:{
-    color:G,
-    fontWeight:'bold',
-    fontSize:15
-  },
-  row:{
-    flexDirection:'row-reverse',
-    flexWrap:'wrap',
-    gap:8
-  },
-  mapBox:{
-    borderRadius:16,
-    overflow:'hidden',
-    borderWidth:1,
-    borderColor:'#DCE5DC'
-  },
-  map:{
-    width:'100%',
-    height:320
-  },
-  attribution:{
-    color:'#536B5D',
-    fontSize:10,
-    padding:5,
-    backgroundColor:'#fff'
-  },
-  pin:{
-    width:34,
-    height:34,
-    borderRadius:17,
-    alignItems:'center',
-    justifyContent:'center',
-    borderWidth:2,
-    borderColor:'#fff'
-  },
-  fare:{
-    fontSize:21,
-    color:G,
-    fontWeight:'bold',
-    textAlign:'right'
-  },
-  tripSummary:{backgroundColor:'#F1F5F0',padding:12,borderRadius:14,gap:8},
-  driverCard:{flexDirection:'row-reverse',alignItems:'center',gap:12,backgroundColor:'#F8F7F2',padding:12,borderRadius:14},
+  safe:{flex:1,backgroundColor:theme.background},
+  page:{padding:theme.space.md,gap:theme.space.md,paddingBottom:theme.space.lg},
+  fixedHeader:{backgroundColor:theme.deep,paddingVertical:12,paddingHorizontal:16,
+    flexDirection:'row-reverse',alignItems:'center',justifyContent:'space-between',gap:12},
+  headerBrand:{flex:1,flexDirection:'row-reverse',alignItems:'center',gap:12},
+  logo:{width:48,height:48,borderRadius:12,resizeMode:'contain',backgroundColor:theme.surface},
+  brand:{color:theme.surface,fontSize:22,fontWeight:'900',textAlign:'right'},
+  muted:{color:'#DDEBE4',fontSize:12,textAlign:'right'},
+  headerAction:{paddingHorizontal:12,paddingVertical:12,borderRadius:12,backgroundColor:'#185B46'},
+  headerActionText:{color:theme.surface,fontWeight:'700',fontSize:12},
+  welcome:{flexDirection:'row-reverse',alignItems:'center',gap:12,paddingVertical:4},
+  eyebrow:{color:G,fontWeight:'700',fontSize:13,textAlign:'right'},
+  brandBadge:{width:48,height:48,borderRadius:24,backgroundColor:theme.warning,justifyContent:'center',alignItems:'center'},
+  brandBadgeText:{color:theme.deep,fontSize:25,fontWeight:'900'},
+  card:{backgroundColor:theme.surface,padding:theme.space.md,gap:12,borderRadius:theme.radius.lg,
+    borderWidth:1,borderColor:theme.border},
+  title:{color:theme.ink,fontSize:22,fontWeight:'800',textAlign:'right',lineHeight:30},
+  label:{color:theme.ink,fontSize:15,fontWeight:'700',textAlign:'right'},
+  body:{color:theme.muted,fontSize:15,textAlign:'right',lineHeight:23},
+  caption:{color:theme.muted,fontSize:13,textAlign:'right',lineHeight:20},
+  input:{backgroundColor:theme.background,borderRadius:theme.radius.sm,padding:14,minHeight:52,textAlign:'right',
+    color:theme.ink,fontSize:16,borderWidth:1,borderColor:theme.border},
+  button:{backgroundColor:G,padding:14,minHeight:48,borderRadius:theme.radius.sm,alignItems:'center',justifyContent:'center',flexGrow:1},
+  secondary:{backgroundColor:theme.soft,borderWidth:1,borderColor:theme.border},
+  buttonText:{color:theme.surface,fontWeight:'700',fontSize:15,textAlign:'center'},
+  secondaryText:{color:G},
+  row:{flexDirection:'row-reverse',flexWrap:'wrap',gap:8},
+  mapBox:{borderRadius:theme.radius.md,overflow:'hidden',borderWidth:1,borderColor:theme.border},
+  map:{width:'100%',height:300},
+  attribution:{color:theme.muted,fontSize:10,padding:5,backgroundColor:theme.surface},
+  pin:{width:34,height:34,borderRadius:17,alignItems:'center',justifyContent:'center',borderWidth:2,borderColor:theme.surface},
+  fare:{fontSize:21,color:G,fontWeight:'800',textAlign:'right'},
+  tripSummary:{backgroundColor:theme.soft,padding:12,borderRadius:theme.radius.md,gap:8},
+  driverCard:{flexDirection:'row-reverse',alignItems:'center',gap:12,backgroundColor:theme.background,padding:12,borderRadius:theme.radius.md},
   driverAvatar:{width:58,height:58,borderRadius:29},
   avatarPreview:{width:112,height:112,borderRadius:56,alignSelf:'center',borderWidth:3,borderColor:Y},
-  avatarEmpty:{minHeight:76,alignItems:'center',justifyContent:'center',backgroundColor:'#F1F5F0',borderRadius:14},
+  avatarEmpty:{minHeight:76,alignItems:'center',justifyContent:'center',backgroundColor:theme.soft,borderRadius:theme.radius.md},
   driverAvatarFallback:{width:58,height:58,borderRadius:29,backgroundColor:G,alignItems:'center',justifyContent:'center'},
   driverInitial:{color:Y,fontSize:26,fontWeight:'bold'},
-  rateBox:{padding:12,backgroundColor:'#F8F7F2',borderRadius:14,gap:8},
-  offer:{
-    gap:8,
-    padding:12,
-    backgroundColor:'#F1F5F0',
-    borderRadius:12
-  },
-  error:{
-    color:'#9B2020',
-    backgroundColor:'#FCE8E6',
-    padding:12,
-    borderRadius:10,
-    textAlign:'right'
-  },
-  success:{
-    color:G,
-    backgroundColor:'#DDF3E7',
-    padding:12,
-    borderRadius:10,
-    textAlign:'right'
-  },
-  footer:{
-    textAlign:'center',
-    color:'#536B5D',
-    fontSize:12
-  }
+  driverStats:{padding:14,gap:8,borderRadius:theme.radius.md,backgroundColor:theme.soft},
+  rateBox:{padding:12,backgroundColor:theme.background,borderRadius:theme.radius.md,gap:8},
+  offer:{gap:8,padding:12,backgroundColor:theme.soft,borderRadius:theme.radius.sm},
+  error:{color:theme.danger,backgroundColor:'#FCE8E6',padding:12,borderRadius:10,textAlign:'right'},
+  success:{color:G,backgroundColor:theme.soft,padding:12,borderRadius:10,textAlign:'right'},
+  footer:{textAlign:'center',color:theme.muted,fontSize:12},
+  tabBar:{flexDirection:'row-reverse',paddingHorizontal:6,paddingVertical:8,backgroundColor:theme.surface,borderTopWidth:1,borderColor:theme.border,gap:2},
+  tabItem:{flex:1,minHeight:58,paddingVertical:5,paddingHorizontal:2,alignItems:'center',justifyContent:'center',gap:2,borderRadius:theme.radius.sm},
+  tabActive:{backgroundColor:theme.soft},
+  tabIcon:{color:theme.muted,fontSize:23,fontWeight:'700',lineHeight:27},
+  tabLabel:{color:theme.muted,fontSize:11,fontWeight:'600',textAlign:'center'},
+  tabSelected:{color:G,fontWeight:'800'},
+  vehicleChoice:{flex:1,minWidth:120,backgroundColor:theme.background,borderWidth:1,borderColor:theme.border,borderRadius:theme.radius.md,padding:12,gap:5},
+  vehicleSelected:{borderColor:G,borderWidth:2,backgroundColor:theme.soft},
+  vehicleTop:{flexDirection:'row-reverse',alignItems:'center',justifyContent:'space-between'},
+  vehicleGlyph:{fontSize:34,color:G},
+  radio:{width:20,height:20,borderRadius:10,borderWidth:1,borderColor:theme.muted,alignItems:'center',justifyContent:'center'},
+  radioSelected:{borderColor:G,borderWidth:2},
+  radioDot:{width:10,height:10,borderRadius:5,backgroundColor:G},
+  badge:{alignSelf:'flex-end',color:G,backgroundColor:theme.soft,paddingHorizontal:10,paddingVertical:6,borderRadius:12,fontSize:12,fontWeight:'700'},
+  pendingBadge:{alignSelf:'flex-end',color:'#775717',backgroundColor:theme.warning,paddingHorizontal:10,paddingVertical:6,borderRadius:12,fontSize:12,fontWeight:'700'},
+  walletHero:{backgroundColor:theme.deep,borderRadius:theme.radius.lg,padding:theme.space.lg,gap:8},
+  walletEyebrow:{fontSize:14,fontWeight:'700',color:Y,textAlign:'right'},
+  walletTitle:{fontSize:28,fontWeight:'900',color:theme.surface,textAlign:'right'},
+  walletText:{fontSize:15,lineHeight:22,color:'#DDEBE4',textAlign:'right'},
+  paymentRow:{flexDirection:'row-reverse',alignItems:'center',gap:12,paddingVertical:12,borderBottomWidth:1,borderColor:theme.border},
+  paymentIcon:{width:44,height:44,borderRadius:12,backgroundColor:theme.soft,justifyContent:'center',alignItems:'center'},
+  paymentSymbol:{color:G,fontSize:22,fontWeight:'800'},
+  cargoPhoto:{width:'100%',height:160,borderRadius:theme.radius.sm,resizeMode:'contain'}
 });
