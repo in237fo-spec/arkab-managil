@@ -1,0 +1,86 @@
+name: Build ARKAB Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_note:
+        description: "Optional note for this APK build"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arkab-android-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-android:
+    name: Build production APK (local EAS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out ARKAB branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/arkab-premium-ui
+
+      - name: Verify Expo token is configured
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Missing EXPO_TOKEN. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install project dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Check Expo project configuration
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx --yes eas-cli@latest project:info
+
+      - name: Build production APK locally
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          CI: "1"
+        run: |
+          mkdir -p dist
+          npx --yes eas-cli@latest build \
+            --platform android \
+            --profile production \
+            --local \
+            --non-interactive \
+            --output "./dist/arkab-v0.9.1-build-${{ github.run_number }}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: arkab-v0.9.1-android-apk
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 14
