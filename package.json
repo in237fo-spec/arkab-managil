@@ -1,6 +1,6 @@
 {
   "name": "arkab",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "main": "expo/AppEntry",
   "scripts": {
@@ -16,10 +16,13 @@
     "expo-location": "~19.0.8",
     "expo-notifications": "~0.32.17",
     "expo-secure-store": "~15.0.8",
+    "expo-splash-screen": "~31.0.13",
     "expo-task-manager": "~14.0.9",
     "react": "19.1.0",
     "react-native": "0.81.5",
+    "react-native-reanimated": "~4.1.1",
     "react-native-safe-area-context": "~5.6.0",
-    "react-native-url-polyfill": "^2.0.0"
+    "react-native-url-polyfill": "^2.0.0",
+    "react-native-worklets": "0.5.1"
   }
 }
