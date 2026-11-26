@@ -7,7 +7,9 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
-      }
+      },
+      "environment": "production",
+      "autoIncrement": true
     },
     "production": {
       "autoIncrement": true,

@@ -49,7 +49,8 @@ for(const scenario of [
   {name:'first cold render',override:[null,null,true]},
   {name:'signed-out login screen',override:[null,null,false]},
   {name:'restored session without profile',override:[{user:{id:'test-rider',email:'test@example.invalid'}},null,true]},
-  {name:'restored passenger without active trip',override:[{user:{id:'test-rider',email:'test@example.invalid'}},{id:'test-rider',role:'passenger'},false]}
+  {name:'restored passenger without active trip',override:[{user:{id:'test-rider',email:'test@example.invalid'}},{id:'test-rider',role:'passenger'},false]},
+  {name:'restored captain without active trip',override:[{user:{id:'test-captain',email:'captain@example.invalid'}},{id:'test-captain',role:'driver'},false]}
 ]){
   index=0;overrides=scenario.override;
   assert.doesNotThrow(()=>StartupMain(),scenario.name);

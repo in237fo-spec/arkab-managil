@@ -21,6 +21,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import {useFonts} from 'expo-font';
 import {useRoadRoute} from './roadRoute';
+import {createRefreshQueue} from './refreshQueue';
 import {useBiometricGate} from './biometricGate';
 import {registerPassengerShareTask,beginPassengerShare,endPassengerShare,stopNativeShare,reconcilePassengerShare,usePassengerShare,shareReady,makeTrackingLink,activeShareLink,trackingViewer,useEarnings,useSupportTickets,supportCategories,supportStatuses,validateTicket} from './v09Services';
 const Cairo_400Regular=require('@expo-google-fonts/cairo/400Regular/Cairo_400Regular.ttf');
@@ -112,6 +113,14 @@ if (!TaskManager.isTaskDefined(DRIVER_LOCATION_TASK)) {
         await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
         return;
       }
+      const {data:sessionData,error:sessionError}=await db.auth.getSession();
+      if(sessionError) return;
+      if(sessionData.session?.user.id!==driverId){
+        await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
+        await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
+        await SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY);
+        return;
+      }
       const {data:ride,error:rideError} = await db.from('rides')
         .select('id,status,driver_id').eq('id',rideId).eq('driver_id',driverId).maybeSingle();
       // A temporary network failure is not proof that a ride ended.
@@ -149,6 +158,7 @@ const activeStates = [
 function rideErrorMessage(error) {
   const message = error?.message || 'تعذر الاتصال';
   if (/network request failed|failed to fetch|fetch failed|timeout|network error/i.test(message))return 'تعذر الاتصال بالإنترنت. تحقق من الشبكة وحاول مجدداً.';
+  if (error?.code==='23505' && /rides_one_active_(driver|passenger)/i.test(message+' '+(error.details||''))) return 'توجد رحلة نشطة بالفعل للراكب أو الكابتن. حدّث الطلبات واختر رحلة أو عرضاً آخر.';
   if (/ride unavailable|ride not found|ride is not available|offer unavailable|offer not found/i.test(message)) {
     return 'الرحلة أو العرض لم يعد متاحاً. تم طلب تحديث الحالة؛ راجع تفاصيل الرحلة وحاول مرة أخرى.';
   }
@@ -489,6 +499,9 @@ function Main() {
 
   const [activeRide,AR] = useState(null);
   const refreshSequence = useRef(0);
+  const refreshQueue = useRef(null);
+  if (!refreshQueue.current) refreshQueue.current=createRefreshQueue();
+  const currentAccount = useRef(null);
   const previousActive = useRef(null);
   useEffect(()=>{
     if(profile?.role==='passenger' && previousActive.current && !activeRide) D('home');
@@ -667,13 +680,18 @@ function Main() {
     }
   }
 
-  async function refresh() {
-    if (!session) return;
+  function refresh() {
+    const id=session?.user.id;
+    if(!id||currentAccount.current!==id) return Promise.resolve();
+    return refreshQueue.current.request(id,()=>performRefresh(id));
+  }
+
+  async function performRefresh(id) {
+    if(currentAccount.current!==id) return;
     const seq = ++refreshSequence.current;
-    const current = () => seq === refreshSequence.current;
+    const current = () => seq === refreshSequence.current && currentAccount.current===id;
 
     try {
-      const id=session.user.id;
 
       const p=check(await db.from('profiles')
         .select('*').eq('id',id).maybeSingle());
@@ -783,16 +801,25 @@ function Main() {
     db.rpc(name,args).then(check);
 
   useEffect(()=>{
+    let authEventSeen=false;
+    let mounted=true;
     db.auth.getSession().then(({data,error})=>{
+      if(!mounted||authEventSeen)return;
       if(error) E(error.message);
+      currentAccount.current=data.session?.user.id||null;
       S(data.session);
       if(!data.session) L(false);
-    }).catch(()=>L(false));
+    }).catch(()=>{if(mounted&&!authEventSeen)L(false);});
 
     const {data}=db.auth.onAuthStateChange((_,v)=>{
+      authEventSeen=true;
+      const previous=currentAccount.current;
+      const next=v?.user.id||null;
+      currentAccount.current=next;
       S(v);
 
-      if(!v){
+      if(!v||(previous&&previous!==next)){
+        refreshQueue.current.reset();
         refreshSequence.current++;
         void stopNativeShare();setSupportRide(null);
         stopTracking();
@@ -801,7 +828,7 @@ function Main() {
         SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY).catch(()=>{});
         SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY).catch(()=>{});
         P(null);
-        AR(null);
+        AR(null); ADR(null); AV(null); RR([]); RD({}); J({});
         DP(null);
         U([]);
         H([]);
@@ -829,6 +856,10 @@ function Main() {
     });
 
     return ()=>{
+      mounted=false;
+      currentAccount.current=null;
+      refreshSequence.current++;
+      refreshQueue.current.reset();
       data.subscription.unsubscribe();
       app.remove();
       stopTracking();
@@ -838,27 +869,31 @@ function Main() {
   useEffect(()=>{
     if(!session) return;
 
-    refresh();
+    const refreshForeground=()=>{if(AppState.currentState==='active')void refresh();};
+    refreshForeground();
 
-    const timer=setInterval(refresh,12000);
+    const timer=setInterval(()=>{
+      if(!refreshQueue.current.isRunning(session.user.id))refreshForeground();
+    },12000);
     const foreground=AppState.addEventListener('change',state=>{
-      if(state==='active') refresh();
+      if(state==='active')void refresh();
     });
 
     const channel=db.channel('arkab-'+session.user.id)
       .on('postgres_changes',{
         event:'*',schema:'public',table:'rides'
-      },refresh)
+      },refreshForeground)
       .on('postgres_changes',{
         event:'*',schema:'public',table:'ride_offers'
-      },refresh)
+      },refreshForeground)
       .on('postgres_changes',{
         event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+session.user.id
-      },refresh)
+      },refreshForeground)
       .subscribe();
 
     return ()=>{
       refreshSequence.current++;
+      refreshQueue.current.reset();
       clearInterval(timer);
       foreground.remove();
       db.removeChannel(channel);
@@ -893,9 +928,10 @@ function Main() {
       setLocationStale(Date.now()-Date.parse(data.updated_at)>45000);
     }
 
-    void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});
-
-    const timer=setInterval(()=>{void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});},10000);
+    const readForeground=()=>{if(AppState.currentState==='active')void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});};
+    readForeground();
+    const foreground=AppState.addEventListener('change',state=>{if(state==='active')void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});});
+    const timer=setInterval(readForeground,10000);
 
     const channel=db.channel('loc-'+activeRide.id)
       .on('postgres_changes',{
@@ -903,12 +939,13 @@ function Main() {
         schema:'public',
         table:'ride_locations',
         filter:'ride_id=eq.'+activeRide.id
-      },()=>{void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});})
+      },readForeground)
       .subscribe();
 
     return ()=>{
       cancelled=true;
       stopTracking();
+      foreground.remove();
       clearInterval(timer);
       db.removeChannel(channel);
     };
