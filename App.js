@@ -2,7 +2,7 @@ import 'react-native-url-polyfill/auto';
 import React, {useState, useEffect, useRef, useCallback} from 'react';
 import SplashIntro from './SplashIntro';
 import {
-  View, Text, TextInput, TouchableOpacity,
+  View, Text as NativeText, TextInput as NativeInput, TouchableOpacity,
   ScrollView, Image, StyleSheet,
   ActivityIndicator, StatusBar, AppState, Linking, Alert, Share, Pressable, Platform
 } from 'react-native';
@@ -15,8 +15,26 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Crypto from 'expo-crypto';
 import * as Notifications from 'expo-notifications';
 import {coordinate,estimateFare,useNearbyVehicles,useAvailableDriverLocation,useRidePush} from './rideFeatures';
-import {Map, Camera, Marker} from '@maplibre/maplibre-react-native';
+import {Map, Camera, Marker, GeoJSONSource, Layer} from '@maplibre/maplibre-react-native';
 import {createClient} from '@supabase/supabase-js';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import {useFonts} from 'expo-font';
+import {useRoadRoute} from './roadRoute';
+const Cairo_400Regular=require('@expo-google-fonts/cairo/400Regular/Cairo_400Regular.ttf');
+const Cairo_700Bold=require('@expo-google-fonts/cairo/700Bold/Cairo_700Bold.ttf');
+
+const FontContext = React.createContext(false);
+function Text({style,...props}) {
+  const loaded = React.useContext(FontContext);
+  const weight = StyleSheet.flatten(style)?.fontWeight;
+  const custom = loaded ? {fontFamily:['700','800','900','bold','600'].includes(String(weight)) ? 'Cairo_700Bold' : 'Cairo_400Regular',fontWeight:'normal'} : null;
+  return <NativeText {...props} style={[style,custom]}/>;
+}
+function TextInput({style,...props}) {
+  const loaded = React.useContext(FontContext);
+  return <NativeInput {...props} style={[style,loaded&&{fontFamily:'Cairo_400Regular'}]}/>;
+}
 
 const theme = {
   green:'#086B47', deep:'#034735', gold:'#E9B949', background:'#F7F6F2',
@@ -50,6 +68,35 @@ const db = createClient(
 const DRIVER_LOCATION_TASK = 'arkab-driver-background-location-v1';
 const ACTIVE_RIDE_KEY = 'arkab.background.activeRideId';
 const ACTIVE_DRIVER_KEY = 'arkab.background.driverId';
+const AVAILABLE_TASK = 'arkab-available-driver-v1';
+const AVAILABLE_DRIVER_KEY = 'arkab.background.availableDriverId';
+
+async function stopAvailableBackground() {
+  if (await Location.hasStartedLocationUpdatesAsync(AVAILABLE_TASK).catch(()=>false))
+    await Location.stopLocationUpdatesAsync(AVAILABLE_TASK).catch(()=>{});
+  await SecureStore.deleteItemAsync(AVAILABLE_DRIVER_KEY).catch(()=>{});
+}
+if (!TaskManager.isTaskDefined(AVAILABLE_TASK)) {
+  TaskManager.defineTask(AVAILABLE_TASK, async ({data,error})=>{
+    if(error || !data?.locations?.length) return;
+    try {
+      const driverId=await SecureStore.getItemAsync(AVAILABLE_DRIVER_KEY);
+      if(!driverId) { await stopAvailableBackground(); return; }
+      const {data:sessionData,error:sessionError}=await db.auth.getSession();
+      if(sessionError) return;
+      if(sessionData.session?.user.id!==driverId) {await stopAvailableBackground();return;}
+      const {data:driver,error:driverError}=await db.from('drivers').select('approved,online').eq('id',driverId).maybeSingle();
+      if(driverError) return;
+      if(!driver?.approved||!driver?.online){await stopAvailableBackground();return;}
+      const {data:ride,error:rideError}=await db.from('rides').select('id').eq('driver_id',driverId)
+        .in('status',['accepted','arrived','in_progress']).limit(1).maybeSingle();
+      if(rideError||ride) return;
+      const point=data.locations[data.locations.length-1];
+      await db.from('driver_locations').upsert({driver_id:driverId,latitude:point.coords.latitude,
+        longitude:point.coords.longitude,updated_at:new Date(point.timestamp||Date.now()).toISOString()});
+    } catch { /* Retry at the next location event. */ }
+  });
+}
 
 if (!TaskManager.isTaskDefined(DRIVER_LOCATION_TASK)) {
   TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({data,error}) => {
@@ -63,7 +110,9 @@ if (!TaskManager.isTaskDefined(DRIVER_LOCATION_TASK)) {
       }
       const {data:ride,error:rideError} = await db.from('rides')
         .select('id,status,driver_id').eq('id',rideId).eq('driver_id',driverId).maybeSingle();
-      if (rideError || !ride || !['accepted','arrived','in_progress'].includes(ride.status)) {
+      // A temporary network failure is not proof that a ride ended.
+      if (rideError) throw rideError;
+      if (!ride || !['accepted','arrived','in_progress'].includes(ride.status)) {
         await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
         await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
         await SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY);
@@ -95,6 +144,7 @@ const activeStates = [
 
 function rideErrorMessage(error) {
   const message = error?.message || 'تعذر الاتصال';
+  if (/network request failed|failed to fetch|fetch failed|timeout|network error/i.test(message))return 'تعذر الاتصال بالإنترنت. تحقق من الشبكة وحاول مجدداً.';
   if (/ride unavailable|ride not found|ride is not available|offer unavailable|offer not found/i.test(message)) {
     return 'الرحلة أو العرض لم يعد متاحاً. تم طلب تحديث الحالة؛ راجع تفاصيل الرحلة وحاول مرة أخرى.';
   }
@@ -124,18 +174,18 @@ function Button({children,onPress,secondary,disabled}) {
 
 function TabBar({tab,onChange,isDriver}) {
   const items = [
-    ['home','⌂',isDriver?'الرئيسية':'الرئيسية'],
-    ['trips','≡','رحلاتي'],
-    ['favorites','☆',isDriver?'المساعدة':'المفضلة'],
-    ['notifications','◉','التنبيهات'],
-    ['account','●','حسابي']
+    ['home','home-outline','الرئيسية'],
+    ['trips','car-outline','رحلاتي'],
+    ['favorites',isDriver?'help-circle-outline':'heart-outline',isDriver?'المساعدة':'المفضلة'],
+    ['notifications','notifications-outline','التنبيهات'],
+    ['account','person-circle-outline','حسابي']
   ];
   return <View style={s.tabBar}>
     {items.map(([key,icon,label])=>(
       <Pressable key={key} accessibilityRole="tab" accessibilityLabel={label}
         accessibilityState={{selected:tab===key}} onPress={()=>onChange(key)}
         style={({pressed})=>[s.tabItem,tab===key&&s.tabActive,pressed&&{opacity:0.75}]}>
-        <Text style={[s.tabIcon,tab===key&&s.tabSelected]}>{icon}</Text>
+        <Ionicons name={icon} size={24} color={tab===key?G:theme.muted}/>
         <Text style={[s.tabLabel,tab===key&&s.tabSelected]}>{label}</Text>
       </Pressable>
     ))}
@@ -147,7 +197,7 @@ function VehicleChoice({kind,selected,onPress}) {
   return <Pressable accessibilityRole="radio" accessibilityState={{checked:selected}}
     accessibilityLabel={cargo?'تكتك نقل':'ركشة'} onPress={onPress}
     style={({pressed})=>[s.vehicleChoice,selected&&s.vehicleSelected,pressed&&{opacity:0.8}]}>
-    <View style={s.vehicleTop}><Text style={s.vehicleGlyph}>{cargo?'▣':'🛺'}</Text>
+    <View style={s.vehicleTop}><MaterialCommunityIcons name={cargo?'truck-cargo-container':'rickshaw'} size={36} color={G}/>
       <View style={[s.radio,selected&&s.radioSelected]}>{selected&&<View style={s.radioDot}/>}</View>
     </View>
     <Text style={s.label}>{cargo?'تكتك نقل':'ركشة'}</Text>
@@ -281,26 +331,46 @@ function Pin({id,point,color,label}) {
 }
 
 function RideMap({
-  pickup,destination,driver,onSelect,nearby=[],nearbyAnchor
+  pickup,destination,driver,onSelect,nearby=[],nearbyAnchor,route,staleDriver=false
 }) {
   const center = pickup || driver || destination || nearbyAnchor || CENTER;
+  const camera=useRef(null);
+  const [mapError,setMapError]=useState(false);
+  const [reload,setReload]=useState(0);
+  const [ready,setReady]=useState(false);
+  const points=[pickup,destination,driver].filter(Boolean);
+  const fit=()=>{
+    if(points.length>1){
+      const lng=points.map(p=>p[0]),lat=points.map(p=>p[1]);
+      camera.current?.fitBounds([Math.min(...lng),Math.min(...lat),Math.max(...lng),Math.max(...lat)],
+        {padding:{top:48,right:48,bottom:48,left:48},duration:400});
+    }else camera.current?.easeTo({center,zoom:14,duration:400});
+  };
+  useEffect(()=>{if(ready&&pickup&&destination)fit();},[ready,pickup?.[0],pickup?.[1],destination?.[0],destination?.[1]]);
+  const line=route?.coordinates?.length>1 ? route.coordinates : null;
 
   return (
     <View style={s.mapBox}>
       <Map
+        key={reload}
         style={s.map}
+        onDidFinishLoadingMap={()=>{setReady(true);setMapError(false);}}
+        onDidFailLoadingMap={()=>setMapError(true)}
         mapStyle="https://tiles.openfreemap.org/styles/liberty"
         onPress={e => {
           const p = e.nativeEvent.lngLat;
           if (onSelect && Array.isArray(p)) onSelect(p);
         }}>
-        <Camera
+        <Camera ref={camera}
           initialViewState={{
             center,
             zoom:14
           }}
         />
 
+        {line&&<GeoJSONSource id="road-route" data={{type:'Feature',properties:{},geometry:{type:'LineString',coordinates:line}}}>
+          <Layer id="road-route-line" type="line" paint={{'line-color':G,'line-width':5,'line-opacity':0.9}}/>
+        </GeoJSONSource>}
         {nearby.map(cell=>(
           <Pin key={cell.kind+'-'+cell.lat+'-'+cell.lng}
             id={'nearby-'+cell.kind+'-'+cell.lat+'-'+cell.lng}
@@ -315,9 +385,14 @@ function RideMap({
           color="#D84315" label="2"/>
 
         <Pin id="driver" point={driver}
-          color="#1565C0" label="🛺"/>
+          color={staleDriver?"#75827A":"#1565C0"} label="🛺"/>
       </Map>
 
+      <Pressable style={s.mapControl} accessibilityRole="button" accessibilityLabel="إعادة توسيط الخريطة" disabled={!ready} onPress={fit}>
+        <Ionicons name="locate-outline" size={24} color={G}/>
+      </Pressable>
+      {mapError&&<View style={s.mapError}><Text style={s.caption}>تعذر تحميل الخريطة. تحقق من الإنترنت.</Text>
+        <Button secondary onPress={()=>{setReady(false);setMapError(false);setReload(v=>v+1);}}>إعادة المحاولة</Button></View>}
       <Text style={s.attribution}>
         © OpenStreetMap contributors • OpenFreeMap
       </Text>
@@ -395,6 +470,11 @@ function Main() {
   const [tab,D] = useState('home');
 
   const [busy,K] = useState(false);
+  const actionPending=useRef(false);
+  const [extraOpen,setExtraOpen]=useState(false);
+  const [availabilityBackground,setAvailabilityBackground]=useState(false);
+  const [syncStatus,setSyncStatus]=useState('loading');
+  const [lastSync,setLastSync]=useState(null);
   const [err,E] = useState('');
   const [notice,SN] = useState('');
 
@@ -411,12 +491,17 @@ function Main() {
   const [ratingDraft,RD] = useState({});
   const [driverPoint,DP] = useState(null);
   const [locationTime,LT] = useState(0);
+  const [locationStale,setLocationStale]=useState(false);
   const [sharing,SH] = useState(false);
   const watchRef = useRef(null);
   const sharingRef = useRef(false);
   const lastSent = useRef(0);
 
-  const km = distanceKm(pickupPoint,destPoint);
+  const route=useRoadRoute(pickupPoint,destPoint);
+  const activeRoute=useRoadRoute(
+    activeRide ? coordinate(activeRide.pickup_lng,activeRide.pickup_lat):null,
+    activeRide ? coordinate(activeRide.destination_lng,activeRide.destination_lat):null);
+  const km = route.status==='ready'?route.distanceKm:distanceKm(pickupPoint,destPoint);
   const estimate = estimateFare(pricing,vehicle,pickupPoint && destPoint ? km : null);
   const userId = session?.user.id;
   const localKey = (name)=>'arkab.v07.'+userId+'.'+name;
@@ -477,6 +562,8 @@ function Main() {
   }
 
   async function run(fn) {
+    if(actionPending.current) return;
+    actionPending.current=true;
     K(true);
     E('');
     SN('');
@@ -486,6 +573,7 @@ function Main() {
     } catch(e) {
       E(rideErrorMessage(e));
     } finally {
+      actionPending.current=false;
       K(false);
     }
   }
@@ -548,7 +636,7 @@ function Main() {
       if (!current()) return;
       P(p);
 
-      if (!p) return;
+      if (!p) {setSyncStatus('ready');setLastSync(Date.now());return;}
 
       const ownerColumn = p.role==='passenger' ? 'passenger_id' : 'driver_id';
       const [historyResult,activeResult] = await Promise.all([
@@ -626,9 +714,10 @@ function Main() {
       if (!inboxResult.error) setNotifications(inboxResult.data || []);
       if (pricingResult && !pricingResult.error) setPricing(pricingResult.data || []);
       if (savedResult && !savedResult.error) setSavedRides((savedResult.data || []).map(row=>row.rides).filter(Boolean));
+      setSyncStatus('ready');setLastSync(Date.now());
 
     } catch(e) {
-      if (current()) E(rideErrorMessage(e));
+      if (current()) {setSyncStatus('error');E(rideErrorMessage(e));}
     } finally {
       if (current()) L(false);
     }
@@ -660,6 +749,7 @@ function Main() {
       if(!v){
         refreshSequence.current++;
         stopTracking();
+        void stopAvailableBackground();setAvailabilityBackground(false);setLastSync(null);setSyncStatus('loading');
         Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
         SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY).catch(()=>{});
         SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY).catch(()=>{});
@@ -731,35 +821,34 @@ function Main() {
   useEffect(()=>{
     stopTracking();
     DP(null);
-    LT(0);
+    LT(0);setLocationStale(false);
 
     if(!activeRide || !session) return;
 
-    let cancelled=false;
+    let cancelled=false;let locationRequest=0;
 
     async function readLocation(){
+      const sequence=++locationRequest;
       const {data,error}=await db
         .from('ride_locations')
         .select('latitude,longitude,updated_at')
         .eq('ride_id',activeRide.id)
         .maybeSingle();
 
-      if(cancelled) return;
+      if(cancelled||sequence!==locationRequest) return;
 
-      if(error || !data ||
-        Date.now()-Date.parse(data.updated_at)>45000){
-        DP(null);
-        LT(0);
-        return;
+      if(error) {setLocationStale(true);return;}
+      if(!data || !Number.isFinite(Date.parse(data.updated_at)) || Date.parse(data.updated_at)<=0){
+        DP(null);LT(0);setLocationStale(true);return;
       }
-
       DP([data.longitude,data.latitude]);
       LT(Date.parse(data.updated_at));
+      setLocationStale(Date.now()-Date.parse(data.updated_at)>45000);
     }
 
-    readLocation();
+    void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});
 
-    const timer=setInterval(readLocation,10000);
+    const timer=setInterval(()=>{void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});},10000);
 
     const channel=db.channel('loc-'+activeRide.id)
       .on('postgres_changes',{
@@ -767,7 +856,7 @@ function Main() {
         schema:'public',
         table:'ride_locations',
         filter:'ride_id=eq.'+activeRide.id
-      },readLocation)
+      },()=>{void readLocation().catch(()=>{if(!cancelled)setLocationStale(true);});})
       .subscribe();
 
     return ()=>{
@@ -779,6 +868,61 @@ function Main() {
 
   },[activeRide?.id,session?.user.id]);
 
+  useEffect(()=>{
+    let cancelled=false;
+    if(profile?.role!=='driver'||!driver?.approved||!driver?.online){
+      if(driver&&(!driver.online||!driver.approved))void stopAvailableBackground();
+      setAvailabilityBackground(false);return;
+    }
+    Location.hasStartedLocationUpdatesAsync(AVAILABLE_TASK).then(running=>{
+      if(!cancelled)setAvailabilityBackground(running);
+    }).catch(()=>{});
+    return()=>{cancelled=true;};
+  },[profile?.role,driver?.approved,driver?.online,userId]);
+
+  async function enableAvailableBackground(){
+    if(!driver?.approved||!driver?.online) throw Error('فعّل استقبال الطلبات أولاً');
+    const allowed=await Location.requestForegroundPermissionsAsync();
+    if(allowed.status!=='granted')throw Error('فعّل إذن الموقع أولاً');
+    await new Promise((resolve,reject)=>Alert.alert('ظهور المركبة في الخلفية',
+      'أثناء تفعيل استقبال الطلبات سيحدّث أركب موقع مركبتك حتى عند إطفاء الشاشة. تظهر للركاب منطقة تقريبية فقط. أوقف استقبال الطلبات لإيقافه.',
+      [{text:'إلغاء',style:'cancel',onPress:()=>reject(Error('لم يتم تفعيل الظهور في الخلفية'))},{text:'متابعة',onPress:resolve}],
+      {cancelable:false}));
+    const permission=await Location.requestBackgroundPermissionsAsync();
+    if(permission.status!=='granted')throw Error('لم يتم السماح بالموقع في الخلفية؛ ستظل متاحاً أثناء فتح التطبيق');
+    await SecureStore.setItemAsync(AVAILABLE_DRIVER_KEY,userId);
+    try{
+      const options={accuracy:Location.Accuracy.Balanced,timeInterval:45000,distanceInterval:0,
+        deferredUpdatesInterval:45000,pausesUpdatesAutomatically:false};
+      if(Platform.OS==='android') options.foregroundService={
+        notificationTitle:'أركب | متاح للطلبات',notificationBody:'يتم تحديث موقع المركبة أثناء توفرها فقط',notificationColor:G,killServiceOnDestroy:false};
+      if(!(await Location.hasStartedLocationUpdatesAsync(AVAILABLE_TASK)))
+        await Location.startLocationUpdatesAsync(AVAILABLE_TASK,options);
+      setAvailabilityBackground(true);SN('تم تفعيل ظهور المركبة في الخلفية');
+    }catch(e){await stopAvailableBackground();throw e;}
+  }
+
+  async function toggleAvailability(){
+    if(!driver?.approved)throw Error('الحساب بانتظار الاعتماد');
+    if(activeRide)throw Error('أكمل الرحلة النشطة أولاً');
+    if(!driver.online){
+      if(!vehicles.some(v=>v.approved))throw Error('يلزم اعتماد مركبة أولاً');
+      const point=await getGPS();
+      check(await db.from('driver_locations').upsert({driver_id:userId,latitude:point[1],longitude:point[0],updated_at:new Date().toISOString()}));
+      check(await db.from('drivers').update({online:true}).eq('id',userId));
+    }else{
+      check(await db.from('drivers').update({online:false}).eq('id',userId));
+      await stopAvailableBackground();setAvailabilityBackground(false);
+    }
+  }
+
+  async function advanceActiveRide(t){
+    const next={accepted:'arrived',arrived:'in_progress',in_progress:'completed'}[t.status];
+    if(!next)throw Error('حالة الرحلة غير متاحة');
+    await rpc('advance_ride',{p_ride:t.id,p_status:next});
+    if(next==='completed')await stopSharing(false);
+  }
+
   async function startSharing(){
     if(!activeRide || activeRide.driver_id!==session.user.id || !activeStates.includes(activeRide.status))
       throw Error('لا توجد رحلة نشطة مرتبطة بحسابك');
@@ -787,7 +931,7 @@ function Main() {
     await new Promise((resolve,reject)=>Alert.alert(
       'السماح بمشاركة الموقع في الخلفية',
       'سيشارك أركب موقعك مع الراكب أثناء الرحلة النشطة فقط، حتى عند تصغير التطبيق أو إطفاء الشاشة. سيظهر إشعار دائم أثناء المشاركة.',
-      [{text:'متابعة',onPress:resolve},{text:'إلغاء',style:'cancel',onPress:()=>reject(Error('تم إلغاء تفعيل تتبع الخلفية'))}]
+      [{text:'متابعة',onPress:resolve},{text:'إلغاء',style:'cancel',onPress:()=>reject(Error('تم إلغاء تفعيل تتبع الخلفية'))}],{cancelable:false}
     ));
     const background=await Location.requestBackgroundPermissionsAsync();
     if(background.status!=='granted') throw Error('فعّل إذن الموقع في الخلفية من إعدادات الهاتف');
@@ -795,6 +939,7 @@ function Main() {
     if(running) await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK);
     await SecureStore.setItemAsync(ACTIVE_RIDE_KEY,activeRide.id);
     await SecureStore.setItemAsync(ACTIVE_DRIVER_KEY,session.user.id);
+    try {
     const current=await Location.getCurrentPositionAsync({accuracy:Location.Accuracy.High});
     const {error:initialError}=await db.from('ride_locations').upsert({
       ride_id:activeRide.id,driver_id:session.user.id,
@@ -809,7 +954,6 @@ function Main() {
       notificationBody:'موقعك يُشارك مع الراكب أثناء الرحلة النشطة فقط',
       notificationColor:G,killServiceOnDestroy:false
     };
-    try {
       await Location.startLocationUpdatesAsync(DRIVER_LOCATION_TASK,options);
       SH(true); SN('بدأ التتبع في الخلفية. سيظل الإشعار ظاهراً حتى انتهاء الرحلة.');
     } catch(e) {
@@ -818,13 +962,13 @@ function Main() {
     }
   }
 
-  async function stopSharing(){
+  async function stopSharing(invalidate=true){
     stopTracking();
     const running=await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>false);
-    if(running) await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK);
+    if(running) await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
     await SecureStore.deleteItemAsync(ACTIVE_RIDE_KEY);
     await SecureStore.deleteItemAsync(ACTIVE_DRIVER_KEY);
-    if(activeRide && activeRide.driver_id===session?.user.id){
+    if(invalidate&&activeRide && activeRide.driver_id===session?.user.id){
       const {error}=await db.from('ride_locations').update({updated_at:new Date(0).toISOString()})
         .eq('ride_id',activeRide.id).eq('driver_id',session.user.id);
       if(error) E(error.message);
@@ -924,7 +1068,7 @@ function Main() {
     setRecipientPhone('+249');
     setCargoDescription('');
     setCargoPhoto(null);
-    submittedDraft.current=null;
+    submittedDraft.current=null;setExtraOpen(false);
   }
 
   function repeatRide(ride) {
@@ -957,7 +1101,9 @@ function Main() {
   }
 
   async function requestRide() {
+    if(activeRide)throw Error('لديك رحلة نشطة بالفعل');
     if (!pickupPoint || !destPoint) throw Error('حدد نقطتي الرحلة على الخريطة');
+    if(distanceKm(pickupPoint,destPoint)<0.03)throw Error('اختر وجهة مختلفة عن نقطة الانطلاق');
     if (!pickup.trim() || !dest.trim()) throw Error('أدخل أسماء المواقع');
     const fare = price.trim() ? Number(price) : estimate;
     if (!Number.isFinite(fare) || fare<=0) throw Error('أدخل سعراً صحيحاً');
@@ -1136,7 +1282,8 @@ function Main() {
 
         ):session && profile ? (
           <>
-            {tab==='home' && <View style={s.welcome}>
+             {syncStatus==='error'&&<View style={s.syncBanner}><Ionicons name="cloud-offline-outline" color={theme.danger} size={22}/><View style={{flex:1}}><Text style={s.label}>الاتصال غير مستقر</Text><Text style={s.caption}>{lastSync?'آخر مزامنة '+new Date(lastSync).toLocaleTimeString():'لم تتم المزامنة بعد'}؛ نحتفظ بآخر بيانات متاحة.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="إعادة المزامنة" style={s.iconButton} onPress={refresh}><Ionicons name="refresh" size={22} color={G}/></Pressable></View>}
+             {tab==='home' && <View style={s.welcome}>
               <View style={{flex:1}}>
                 <Text style={s.eyebrow}>{profile.role==='driver'?'لوحة الكابتن':'مرحباً بك'}</Text>
                 <Text style={s.title}>أهلاً {profile.full_name}</Text>
@@ -1157,10 +1304,11 @@ function Main() {
               <Text style={s.label}>بيانات التواصل</Text>
               <Text style={s.body}>{profile.contact_phone||'لا يوجد رقم مسجل'}</Text>
               <Text style={s.body}>{session.user.email}</Text>
-              {profile.role==='driver' && <Button secondary onPress={()=>D('home')}>إدارة المركبة وحساب الكابتن</Button>}
+               {profile.role==='driver' && <Text style={s.caption}>بيانات المركبات والاعتماد بالأسفل.</Text>}
               <Button secondary disabled={busy} onPress={()=>run(async()=>{
-                await stopSharing();
-                if(driver?.approved && driver?.online) {
+                                 await stopSharing();
+                 await stopAvailableBackground();setAvailabilityBackground(false);
+                 if(driver?.approved && driver?.online) {
                   await db.from('drivers').update({online:false}).eq('id',userId);
                 }
                 await push.unregister().catch(()=>{});
@@ -1216,6 +1364,7 @@ function Main() {
             {tab==='notifications' && (
               <View style={s.card}>
                 <Text style={s.title}>إشعارات الرحلات</Text>
+                <Text style={s.caption}>{push.enabled?'إشعارات الهاتف مفعّلة':push.registrationError?'تعذر تسجيل الهاتف؛ حاول التفعيل مرة أخرى':'فعّل إشعارات الهاتف لتصلك مستجدات الرحلة.'}</Text>
                 {!push.enabled && <Button secondary disabled={busy} onPress={()=>run(async()=>{
                   try {
                     const enabled=await push.enable();
@@ -1241,7 +1390,8 @@ function Main() {
               <View style={s.card}>
                 <Text style={s.title}>متابعة الرحلة</Text>
 
-                <Text style={s.badge}>{states[activeRide.status]}</Text>
+                 <Text style={s.badge}>{states[activeRide.status]}</Text>
+                 <RideProgress status={activeRide.status}/>
                 <View style={s.tripSummary}>
                   <Text style={s.body}>📍 الانطلاق: {activeRide.pickup}</Text>
                   <Text style={s.body}>🏁 الوجهة: {activeRide.destination}</Text>
@@ -1254,7 +1404,7 @@ function Main() {
                   )}
                   <Text style={s.body}>🛺 نوع المركبة: {activeRide.vehicle_kind==='rickshaw'?'ركشة':'تكتك نقل'}</Text>
                   <Text style={s.body}>📏 المسافة: {Number(activeRide.distance_km||0).toFixed(1)} كم تقريباً</Text>
-                  <Text style={s.body}>⏱ الزمن المتوقع: {Math.max(3,Math.ceil(Number(activeRide.distance_km||0)*3))} دقيقة تقريباً (تقديري)</Text>
+                   <Text style={s.body}>⏱ مدة الطريق المتوقعة: {activeRoute.status==='ready'?Math.max(1,Math.ceil(activeRoute.durationMin)):Math.max(3,Math.ceil(Number(activeRide.distance_km||0)*3))} دقيقة تقريباً {activeRoute.status==='ready'?'حسب الطريق':'(تقدير أولي)'}</Text>
                   <Text style={s.fare}>💰 الأجرة: {activeRide.agreed_fare??activeRide.proposed_fare} ج.س</Text>
                 </View>
                 {profile.role==='passenger' && activeDriver && (
@@ -1277,12 +1427,13 @@ function Main() {
                   destination={activeRide.destination_lng!=null &&
                     activeRide.destination_lat!=null ?
                     [activeRide.destination_lng,activeRide.destination_lat]:null}
-                  driver={driverPoint}
+                   driver={driverPoint} staleDriver={locationStale}
+                   route={activeRoute.status==='ready'?activeRoute:null}
                 />
 
                 <Text style={s.body}>
                   {driverPoint ?
-                    'آخر تحديث لموقع الكابتن: '+
+                     (locationStale?'آخر موقع معروف (غير مباشر): ':'آخر تحديث لموقع الكابتن: ')+
                     new Date(locationTime).toLocaleTimeString():
                     'لا يوجد موقع مباشر حديث'}
                 </Text>
@@ -1303,6 +1454,8 @@ function Main() {
                     </Button>
                   </>
                 )}
+                {profile.role==='driver'&&activeRide.driver_id===userId&&activeStates.includes(activeRide.status)&&
+                  <Button disabled={busy} onPress={()=>activeRide.status==='in_progress'?Alert.alert('إنهاء الرحلة','هل وصلت إلى الوجهة؟',[{text:'رجوع',style:'cancel'},{text:'إنهاء',onPress:()=>act(()=>advanceActiveRide(activeRide))}]):act(()=>advanceActiveRide(activeRide))}>{activeRide.status==='accepted'?'وصلت للموقع':activeRide.status==='arrived'?'بدء الرحلة':'إنهاء الرحلة'}</Button>}
                 {activeRide.driver_id&&activeStates.includes(activeRide.status)&&
                   <Button secondary onPress={()=>setChatOpen(v=>!v)}>{chatOpen?'إغلاق المحادثة':'محادثة الرحلة'}</Button>}
                 {chatOpen&&activeRide.driver_id&&activeStates.includes(activeRide.status)&&
@@ -1323,8 +1476,8 @@ function Main() {
             {profile.role==='passenger' &&
              tab==='home' && !activeRide && (
               <View style={s.card}>
-                <Text style={s.title}>إلى أين؟</Text>
-                <Text style={s.caption}>حدد نقطة الانطلاق والوجهة على الخريطة.</Text>
+                <Text style={s.title}>وين ماشي؟</Text>
+                <Text style={s.caption}>اختر مكان الانطلاق والوجهة، ثم المركبة المناسبة.</Text>
                 <View style={s.row}>
                   <Button secondary={selectPoint!=='pickup'}
                     onPress={()=>SEL('pickup')}>
@@ -1342,6 +1495,7 @@ function Main() {
                   nearbyAnchor={nearbyAnchor}
                   pickup={pickupPoint}
                   destination={destPoint}
+                  route={route.status==='ready'?route:null}
                   onSelect={p=>{
                     if(selectPoint==='pickup'){
                       AP(p);
@@ -1365,33 +1519,26 @@ function Main() {
                   📍 استخدام موقعي الحالي
                 </Button>
 
-                {!!savedRides.length && (
-                  <View style={s.tripSummary}>
-                    <Text style={s.label}>المشاوير المحفوظة</Text>
-                    {savedRides.map(ride=>(
-                      <Button key={ride.id} secondary disabled={busy} onPress={()=>repeatRide(ride)}>
-                        {ride.pickup} ← {ride.destination}
-                      </Button>
-                    ))}
-                  </View>
-                )}
                 {nearby.status!=='idle' && (
                   <View style={s.tripSummary}>
-                    <Text style={s.label}>المركبات المتاحة حول الانطلاق</Text>
+                    <View style={s.optionRow}><Text style={[s.label,{flex:1}]}>المركبات المتاحة حول الانطلاق</Text><Pressable accessibilityRole="button" accessibilityLabel="تحديث المركبات القريبة" style={s.iconButton} onPress={nearby.refresh}><Ionicons name="refresh-outline" size={22} color={G}/></Pressable></View>
                     <Text style={s.body}>{nearby.status==='ready'
                       ? '🛺 '+nearbyCount('rickshaw')+' ركشة • 📦 '+nearbyCount('cargo_tuktuk')+' تكتك شحن'
                       : nearby.status==='loading' ? 'جاري تحديث المركبات القريبة…' : 'تعذر تحميل المركبات القريبة'}</Text>
+                    {nearby.status==='ready'&&<Text style={s.caption}>آخر تحديث: {new Date(nearby.updatedAt).toLocaleTimeString()} • المواقع تقريبية لحماية خصوصية الكباتن.</Text>}
                   </View>
                 )}
 
                 <Field label="اسم مكان الانطلاق"
                   value={pickup} onChangeText={A}/>
 
-                <Field label="وصف مكان الالتقاء (اختياري)"
-                  placeholder="مثلاً: بوابة السوق الغربية"
-                  value={pickupNote} onChangeText={setPickupNote} maxLength={240}/>
                 <Field label="اسم الوجهة"
-                  value={dest} onChangeText={B}/>
+                  value={dest} onChangeText={B} placeholder="مثلاً: السوق أو المستشفى"/>
+                <Pressable accessibilityRole="button" accessibilityState={{expanded:extraOpen}} style={s.optionRow} onPress={()=>setExtraOpen(v=>!v)}>
+                  <Ionicons name="options-outline" size={22} color={G}/><Text style={[s.label,{flex:1}]}>خيارات المشوار والمفضلة</Text><Ionicons name={extraOpen?'chevron-up':'chevron-down'} size={20} color={G}/>
+                </Pressable>
+                {extraOpen&&<>
+                <Field label="وصف مكان الالتقاء (اختياري)" placeholder="مثلاً: بوابة السوق الغربية" value={pickupNote} onChangeText={setPickupNote} maxLength={240}/>
                 <View style={s.tripSummary}>
                   <Text style={s.label}>الأماكن المفضلة</Text>
                   <Text style={s.caption}>اختر الانطلاق أو الوجهة أعلاه ثم احفظ الموقع أو استخدم مكاناً محفوظاً.</Text>
@@ -1408,6 +1555,7 @@ function Main() {
                 <Button secondary={!forSomeone} onPress={()=>setForSomeone(value=>!value)}>
                   {forSomeone?'الطلب لشخص آخر ✓':'اطلب لزول تاني'}
                 </Button>
+                </>}
                 {forSomeone && <Field label="رقم هاتف الشخص المنتظر" value={recipientPhone}
                   onChangeText={setRecipientPhone} keyboardType="phone-pad" maxLength={13}/>}
 
@@ -1417,8 +1565,7 @@ function Main() {
                   </Text>}
 
                 <Text style={s.body}>
-                  المسافة تقديرية بخط مستقيم،
-                  وليست مسافة الطريق الفعلية.
+                  {route.status==='ready'?'المسافة حسب الطريق المتاح • الزمن '+Math.ceil(route.durationMin)+' دقيقة تقريباً':route.status==='loading'?'جاري حساب الطريق… المسافة الحالية تقدير أولي':'المسافة تقديرية بخط مستقيم، وليست مسافة الطريق الفعلية.'}
                 </Text>
 
                 <Text style={s.label}>اختر نوع المركبة</Text>
@@ -1447,7 +1594,8 @@ function Main() {
                 <Field label="الأجرة المقترحة بالجنيه" value={price} onChangeText={Q}
                   placeholder={estimate===null?undefined:String(estimate)} keyboardType="numeric"/>
 
-                <Button disabled={busy} onPress={()=>act(requestRide)}>
+                {(!pickupPoint||!destPoint)&&<Text style={s.caption}>حدد الموقعين على الخريطة قبل الحجز.</Text>}
+                <Button disabled={busy||!pickupPoint||!destPoint||syncStatus==='error'||route.status==='loading'} onPress={()=>act(requestRide)}>
                   اطلب مشوارك
                 </Button>
                 <Button secondary disabled={busy||!localReady} onPress={()=>setScheduleOpen(v=>!v)}>
@@ -1465,13 +1613,18 @@ function Main() {
 
             {profile.role==='driver' && tab==='home' && (
               <View style={s.card}>
+                <View style={s.optionRow}><View style={{flex:1}}><Text style={s.title}>العمل اليوم</Text><Text style={s.caption}>{driver?.approved?(driver.online?'متاح لاستقبال الطلبات':'غير متاح الآن'):'أكمل التسجيل والاعتماد'}</Text></View>
+                  <Ionicons name={driver?.online?'radio-button-on':'radio-button-off'} size={32} color={driver?.online?G:theme.muted}/></View>
+                {driver?.approved?<Button disabled={busy||!!activeRide} secondary={driver.online} onPress={()=>act(toggleAvailability)}>{driver.online?'إيقاف استقبال الطلبات':'بدء استقبال الطلبات'}</Button>:<Button onPress={()=>D('account')}>إكمال حساب الكابتن</Button>}
+                {driver?.approved&&driver.online&&!activeRide&&<><Text style={s.caption}>{availabilityBackground?'ظهور المركبة في الخلفية مفعّل':'حالياً يتم تحديث موقعك أثناء فتح التطبيق.'}</Text>
+                  <Button secondary disabled={busy} onPress={()=>run(availabilityBackground?async()=>{await stopAvailableBackground();setAvailabilityBackground(false);}:enableAvailableBackground)}>{availabilityBackground?'إيقاف ظهور الخلفية':'تفعيل ظهور الخلفية'}</Button></>}
+                <Text style={s.caption}>الرحلات المكتملة ضمن آخر 50 رحلة</Text>
+                <Text style={s.fare}>{trips.filter(t=>t.status==='completed'&&t.driver_id===userId).length} رحلة</Text>
+              </View>
+            )}
+            {profile.role==='driver' && tab==='account' && (
+              <View style={s.card}>
                 <Text style={s.title}>حساب الكابتن</Text>
-                {driver?.approved && <View style={s.driverStats}>
-                  <Text style={s.badge}>{driver.online?'متصل • متاح للطلبات':'غير متصل'}</Text>
-                  <Text style={s.caption}>الرحلات المكتملة ضمن آخر 50 رحلة</Text>
-                  <Text style={s.fare}>{trips.filter(t=>t.status==='completed'&&t.driver_id===userId).length} رحلة</Text>
-                </View>}
-
                 {!driver ? (
                   <Button disabled={busy}
                     onPress={()=>act(()=>db.from('drivers')
@@ -1493,21 +1646,6 @@ function Main() {
                       const updated=check(await db.from('profiles').update({contact_phone:driverPhone.trim()||null}).eq('id',session.user.id).select().single());
                       P(v=>({...v,...updated})); SN('تم تحديث رقم التواصل');
                     })}>حفظ رقم الهاتف</Button>
-
-                    {driver.approved &&
-                      <Button disabled={busy}
-                        onPress={()=>act(async()=>{
-                          if (!driver.online) {
-                            const point=await getGPS();
-                            check(await db.from('driver_locations').upsert({
-                              driver_id:userId,latitude:point[1],longitude:point[0],updated_at:new Date().toISOString()
-                            }));
-                          }
-                          check(await db.from('drivers').update({online:!driver.online}).eq('id',userId));
-                        })}>
-                        {driver.online?'إيقاف استقبال الطلبات':
-                         'استقبال الطلبات'}
-                      </Button>}
 
                     <Field label="رقم اللوحة"
                       value={plate} onChangeText={SP}/>
@@ -1591,7 +1729,7 @@ function Main() {
                   <View style={s.rateBox}>
                     <Text style={s.label}>قيّم تجربتك مع الكابتن</Text>
                     <View style={s.row}>
-                      {[1,2,3,4,5].map(n=><TouchableOpacity key={n} onPress={()=>RD(v=>({...v,[t.id]:n}))}><Text style={{fontSize:30,color:(ratingDraft[t.id]||0)>=n?'#FFB600':'#B8C2BA'}}>★</Text></TouchableOpacity>)}
+                      {[1,2,3,4,5].map(n=><TouchableOpacity key={n} accessibilityRole="button" accessibilityLabel={n+' من 5 نجوم'} accessibilityState={{selected:ratingDraft[t.id]===n}} style={{minWidth:44,minHeight:48,alignItems:'center',justifyContent:'center'}} onPress={()=>RD(v=>({...v,[t.id]:n}))}><Text style={{fontSize:30,color:(ratingDraft[t.id]||0)>=n?'#FFB600':'#B8C2BA'}}>★</Text></TouchableOpacity>)}
                     </View>
                     <Button disabled={busy||!ratingDraft[t.id]} onPress={()=>act(async()=>{check(await db.from('ratings').insert({ride_id:t.id,passenger_id:session.user.id,score:ratingDraft[t.id]}));RR(v=>[...v,t.id]);})}>إرسال التقييم</Button>
                   </View>
@@ -1628,9 +1766,10 @@ function Main() {
                 {profile.role==='passenger' &&
                  t.status==='requested' &&
                  offers.filter(o=>o.ride_id===t.id)
-                   .map(o=>(
+                   .sort((a,b)=>Number(a.fare)-Number(b.fare))
+                   .map((o,index)=>(
                     <View key={o.id} style={s.offer}>
-                      <Text style={s.body}>{o.fare} ج.س</Text>
+                      <View style={s.optionRow}><View style={{flex:1}}><Text style={s.label}>عرض {index+1}{index===0?' • أقل سعر':''}</Text><Text style={s.caption}>اختر العرض المناسب. تظهر بيانات الكابتن بعد قبول العرض.</Text></View><Text style={s.fare}>{o.fare} ج.س</Text></View>
                       <Button disabled={busy}
                         onPress={()=>act(()=>rpc('accept_offer',{
                           p_offer:o.id,
@@ -1641,21 +1780,9 @@ function Main() {
 
                 {profile.role==='driver' &&
                  t.driver_id===session.user.id &&
-                 activeStates.includes(t.status) && (
+                 t.id!==activeRide?.id && activeStates.includes(t.status) && (
                   <Button disabled={busy}
-                    onPress={()=>act(async()=>{
-                      if(t.status==='in_progress')
-                        await stopSharing();
-
-                      await rpc('advance_ride',{
-                        p_ride:t.id,
-                        p_status:{
-                          accepted:'arrived',
-                          arrived:'in_progress',
-                          in_progress:'completed'
-                        }[t.status]
-                      });
-                    })}>
+                    onPress={()=>act(()=>advanceActiveRide(t))}>
                     {t.status==='accepted'?'وصلت للموقع':
                      t.status==='arrived'?'بدء الرحلة':
                      'إنهاء الرحلة'}
@@ -1663,7 +1790,7 @@ function Main() {
                 )}
 
                 {profile.role==='passenger' &&
-                 t.status==='requested' && (
+                 t.status==='requested' && t.id!==activeRide?.id && (
                   <Button secondary disabled={busy}
                     onPress={()=>act(()=>rpc('advance_ride',{
                       p_ride:t.id,
@@ -1676,7 +1803,7 @@ function Main() {
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • v0.7.1</Text>
+        <Text style={s.footer}>ARKAB • v0.8.0</Text>
       </ScrollView>
       {!!session && !!profile && <TabBar tab={tab} isDriver={profile.role==='driver'}
         onChange={key=>{D(key);if(key==='trips'||key==='notifications')refresh();}}/>}
@@ -1684,13 +1811,21 @@ function Main() {
   );
 }
 
+function RideProgress({status}){
+  const steps=[['requested','الطلب'],['accepted','الاتفاق'],['arrived','الوصول'],['in_progress','الرحلة'],['completed','تمت']];
+  const active=steps.findIndex(([key])=>key===status);
+  return <View style={s.progressRow} accessibilityLabel={'مرحلة الرحلة: '+(states[status]||status)}>
+    {steps.map(([key,label],i)=><View key={key} style={s.progressItem}><View style={[s.progressDot,i<=active&&{backgroundColor:G}]}>{i<active?<Ionicons name="checkmark" size={14} color="#fff"/>:<Text style={{color:i<=active?'#fff':theme.muted,fontSize:12}}>{i+1}</Text>}</View><Text style={[s.caption,{fontSize:11,textAlign:'center',color:i===active?G:theme.muted}]}>{label}</Text></View>)}
+  </View>;
+}
 export default function App(){
+  const [fontsLoaded]=useFonts({Cairo_400Regular,Cairo_700Bold});
   const [intro,setIntro] = useState(true);
   const finishIntro = useCallback(()=>setIntro(false),[]);
   return (
     <SafeAreaProvider>
       <View style={{flex:1,backgroundColor:G}}>
-        <Main/>
+        <FontContext.Provider value={fontsLoaded}><Main/></FontContext.Provider>
         {intro&&<SplashIntro onFinish={finishIntro}/>}
       </View>
     </SafeAreaProvider>
@@ -1726,7 +1861,15 @@ const s=StyleSheet.create({
   secondaryText:{color:G},
   row:{flexDirection:'row-reverse',flexWrap:'wrap',gap:8},
   mapBox:{borderRadius:theme.radius.md,overflow:'hidden',borderWidth:1,borderColor:theme.border},
-  map:{width:'100%',height:300},
+  map:{width:'100%',height:355},
+  mapControl:{position:'absolute',right:12,top:12,width:48,height:48,borderRadius:24,backgroundColor:'#fff',alignItems:'center',justifyContent:'center',elevation:3},
+  mapError:{position:'absolute',left:12,right:12,bottom:35,padding:12,borderRadius:12,backgroundColor:theme.surface,gap:8},
+  iconButton:{minWidth:48,minHeight:48,alignItems:'center',justifyContent:'center'},
+  syncBanner:{flexDirection:'row-reverse',alignItems:'center',gap:8,backgroundColor:theme.warning,borderRadius:12,padding:10},
+  optionRow:{flexDirection:'row-reverse',alignItems:'center',gap:10,minHeight:48},
+  progressRow:{flexDirection:'row-reverse',justifyContent:'space-between',gap:2},
+  progressItem:{flex:1,alignItems:'center',gap:5},
+  progressDot:{width:26,height:26,borderRadius:13,backgroundColor:theme.border,alignItems:'center',justifyContent:'center'},
   attribution:{color:theme.muted,fontSize:10,padding:5,backgroundColor:theme.surface},
   pin:{width:34,height:34,borderRadius:17,alignItems:'center',justifyContent:'center',borderWidth:2,borderColor:theme.surface},
   fare:{fontSize:21,color:G,fontWeight:'800',textAlign:'right'},
@@ -1747,7 +1890,7 @@ const s=StyleSheet.create({
   tabItem:{flex:1,minHeight:58,paddingVertical:5,paddingHorizontal:2,alignItems:'center',justifyContent:'center',gap:2,borderRadius:theme.radius.sm},
   tabActive:{backgroundColor:theme.soft},
   tabIcon:{color:theme.muted,fontSize:23,fontWeight:'700',lineHeight:27},
-  tabLabel:{color:theme.muted,fontSize:11,fontWeight:'600',textAlign:'center'},
+  tabLabel:{color:theme.muted,fontSize:12,fontWeight:'600',textAlign:'center'},
   tabSelected:{color:G,fontWeight:'800'},
   vehicleChoice:{flex:1,minWidth:120,backgroundColor:theme.background,borderWidth:1,borderColor:theme.border,borderRadius:theme.radius.md,padding:12,gap:5},
   vehicleSelected:{borderColor:G,borderWidth:2,backgroundColor:theme.soft},

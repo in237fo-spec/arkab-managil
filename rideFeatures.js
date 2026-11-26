@@ -14,7 +14,8 @@ export function estimateFare(pricing, kind, distance) {
 }
 
 export function useNearbyVehicles(db, userId, pickup) {
-  const [result,setResult] = useState({rows:[],status:'idle'});
+  const [result,setResult] = useState({rows:[],status:'idle',updatedAt:null});
+  const [refreshTick,setRefreshTick]=useState(0);
   const [lng,lat] = pickup || [];
   useEffect(()=>{
     if (!userId || lat == null || lng == null) {
@@ -30,7 +31,7 @@ export function useNearbyVehicles(db, userId, pickup) {
       try {
         const {data,error} = await db.rpc('nearby_vehicles',{p_lat:lat,p_lng:lng});
         if (!cancelled) setResult(error ?
-          {rows:[],status:'error'} : {rows:data || [],status:'ready'});
+          {rows:[],status:'error'} : {rows:data || [],status:'ready',updatedAt:Date.now()});
       } catch {
         if (!cancelled) setResult({rows:[],status:'error'});
       } finally {
@@ -38,13 +39,13 @@ export function useNearbyVehicles(db, userId, pickup) {
       }
     }
     refresh();
-    const timer = setInterval(refresh,30000);
+    const timer = setInterval(refresh,20000);
     const listener = AppState.addEventListener('change',state=>{
       if (state === 'active') refresh();
     });
     return ()=>{cancelled = true; clearInterval(timer); listener.remove();};
-  },[db,userId,lng,lat]);
-  return result;
+  },[db,userId,lng,lat,refreshTick]);
+  return {...result,refresh:()=>setRefreshTick(v=>v+1)};
 }
 
 export function useAvailableDriverLocation(db, userId, onError) {
@@ -111,32 +112,45 @@ export function useRidePush(db, userId, onOpen) {
   identity.current = userId;
   openRef.current = onOpen;
   const [enabled,setEnabled] = useState(false);
+  const registration = useRef(null);
+  const [registrationError,setRegistrationError]=useState(false);
 
   async function register(requestPermission) {
     const id = userId;
+    if(!id)return false;
     const value = await acquirePushToken(requestPermission);
     if (!value || identity.current !== id || !id) return false;
     const {error} = await db.rpc('set_push_device',{p_token:value,p_enabled:true});
     if (error) throw error;
     if (identity.current !== id) return false;
     token.current = value;
-    setEnabled(true);
+    setEnabled(true);setRegistrationError(false);
     return true;
   }
 
   useEffect(()=>{
     token.current = null;
-    setEnabled(false);
+    setEnabled(false);setRegistrationError(false);
     if (!userId) return;
-    void register(false).catch(()=>{});
+    let stopped=false;
+    const retry=()=>{
+      if(stopped||registration.current===userId)return;
+      registration.current=userId;
+      void register(false).then(ok=>{if(!stopped&&!ok)setEnabled(false);})
+        .catch(()=>{if(!stopped)setRegistrationError(true);})
+        .finally(()=>{if(registration.current===userId)registration.current=null;});
+    };
+    retry();
+    const app=AppState.addEventListener('change',state=>{if(state==='active')retry();});
+    const rotation=Notifications.addPushTokenListener(()=>retry());
     function open(response) {
-      if (!response?.notification.request.content.data?.rideId) return;
+      if(stopped||identity.current!==userId||!response?.notification?.request?.content?.data?.rideId) return;
       openRef.current(response.notification.request.content.data.rideId);
       void Notifications.clearLastNotificationResponseAsync().catch(()=>{});
     }
     const listener = Notifications.addNotificationResponseReceivedListener(open);
     void Notifications.getLastNotificationResponseAsync().then(open).catch(()=>{});
-    return ()=>listener.remove();
+    return ()=>{stopped=true;listener.remove();app.remove();rotation.remove();};
   },[userId]);
 
   async function unregister() {
@@ -146,5 +160,5 @@ export function useRidePush(db, userId, onOpen) {
     token.current = null;
     setEnabled(false);
   }
-  return {enabled, enable:()=>register(true), unregister};
+  return {enabled,registrationError,enable:()=>register(true),unregister};
 }
