@@ -26,6 +26,8 @@
 
 ## 3. إعدادات الإصدار التي أصبحت في المستودع
 
+- مصدر `arkab-ride-push` في الفرع أصبح يدعم اختيارياً سر `EXPO_ACCESS_TOKEN` عند تفعيل Enhanced Push Security في Expo. هذا التغيير محفوظ في GitHub فقط ولم يُنشر إلى Edge Function الحية بعد؛ يلزم نشره بعد ضبط السر واختبار الإشعارات.
+
 - `eas.json`: ملف `preview` ينتج APK داخلياً.
 - `eas.json`: ملف `production` ينتج AAB للنشر في المتجر مع زيادة رقم البناء عن بُعد.
 - `app.json`: Android API 36.
