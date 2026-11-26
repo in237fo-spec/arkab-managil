@@ -44,9 +44,14 @@ Deno.serve(async request=>{
   if (!data?.length) return new Response(null,{status:204});
 
   try {
+    const expoAccessToken=(Deno.env.get('EXPO_ACCESS_TOKEN')||'').trim();
+    const headers:Record<string,string>={'Content-Type':'application/json','Accept':'application/json'};
+    // Optional: set EXPO_ACCESS_TOKEN when Enhanced Push Security is enabled
+    // for this Expo project. Without it, legacy Expo Push behavior is unchanged.
+    if(expoAccessToken)headers.Authorization='Bearer '+expoAccessToken;
     const send=()=>fetch('https://exp.host/--/api/v2/push/send',{
       method:'POST',
-      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      headers,
       body:JSON.stringify(data),
       signal:AbortSignal.timeout(10000)
     });
