@@ -39,9 +39,9 @@ function TextInput({style,...props}) {
 }
 
 const theme = {
-  green:'#086B47', deep:'#034735', gold:'#E9B949', background:'#F7F6F2',
-  surface:'#FFFFFF', soft:'#EAF4EE', ink:'#152C23', muted:'#52695E',
-  border:'#DEE7E1', danger:'#A22D2D', warning:'#FFF4D6',
+  green:'#147A53', deep:'#0B3D2E', gold:'#D5AC53', background:'#F4F7F5',
+  surface:'#FFFFFF', soft:'#EAF3EE', ink:'#172821', muted:'#62736B',
+  border:'#E1E9E4', danger:'#B42318', warning:'#FFF4D6',
   radius:{sm:12,md:16,lg:22}, space:{xs:4,sm:8,md:16,lg:24}
 };
 const G = theme.green;
@@ -320,15 +320,17 @@ function distanceKm(a,b) {
   return 12742 * Math.asin(Math.sqrt(Math.min(1,x)));
 }
 
-function Pin({id,point,color,label}) {
+function Pin({id,point,color,label,icon,count}) {
   if (!point) return null;
-
   return (
     <Marker id={id} lngLat={point}>
-      <View style={[s.pin,{backgroundColor:color}]}>
-        <Text style={{color:'#fff',fontWeight:'bold'}}>
-          {label}
-        </Text>
+      <View style={s.pinWrap}>
+        <View style={[s.pin,{backgroundColor:color}]}>
+          {icon
+            ? <MaterialCommunityIcons name={icon} size={19} color="#FFFFFF"/>
+            : <Text style={{color:'#FFFFFF',fontWeight:'800'}}>{label}</Text>}
+        </View>
+        {count>1&&<View style={s.pinCount}><Text style={s.pinCountText}>{count}</Text></View>}
       </View>
     </Marker>
   );
@@ -380,7 +382,8 @@ function RideMap({
             id={'nearby-'+cell.kind+'-'+cell.lat+'-'+cell.lng}
             point={[cell.lng,cell.lat]}
             color={cell.kind==='rickshaw'?'#246D52':'#915319'}
-            label={(cell.kind==='rickshaw'?'🛺':'📦')+(cell.vehicle_count>1?' '+cell.vehicle_count:'')}/>
+            icon={cell.kind==='rickshaw'?'rickshaw':'truck-cargo-container'}
+            count={cell.vehicle_count}/>
         ))}
         <Pin id="pickup" point={pickup}
           color={G} label="1"/>
@@ -389,7 +392,7 @@ function RideMap({
           color="#D84315" label="2"/>
 
         <Pin id="driver" point={driver}
-          color={staleDriver?"#75827A":"#1565C0"} label="🛺"/>
+          color={staleDriver?"#75827A":"#1565C0"} icon="rickshaw"/>
       </Map>
 
       <Pressable style={s.mapControl} accessibilityRole="button" accessibilityLabel="إعادة توسيط الخريطة" disabled={!ready} onPress={fit}>
@@ -466,7 +469,9 @@ function Main() {
   const [emergencyPhone,setEmergencyPhone] = useState('');
   const [localReady,setLocalReady] = useState(false);
   const [chatOpen,setChatOpen] = useState(false);
-  const [tripFilter,setTripFilter] = useState('all');
+  const [tripFilter,setTripFilter] = useState('active');
+  const [expandedTrip,setExpandedTrip] = useState(null);
+  const [tripPage,setTripPage] = useState(1);
 
   const [trips,U] = useState([]);
   const [offers,H] = useState([]);
@@ -560,6 +565,13 @@ function Main() {
   const orderedTrips = focusedRide
     ? [...trips.filter(ride=>ride.id===focusedRide),...trips.filter(ride=>ride.id!==focusedRide)]
     : trips;
+  const visibleTrips = tab==='trips'
+    ? orderedTrips.filter(ride=>ride.id===focusedRide ||
+        (tripFilter==='all' ? true :
+          tripFilter==='active' ? ['requested',...activeStates].includes(ride.status) :
+          ride.status===tripFilter))
+    : orderedTrips.filter(ride=>ride.status==='requested');
+  const pagedTrips = visibleTrips.slice(0,tripPage*10);
 
   function openRide(rideId,title) {
     setFocusedRide(rideId);
@@ -1326,7 +1338,7 @@ function Main() {
                 <Text style={s.title}>أهلاً {profile.full_name}</Text>
                 <Text style={s.body}>{profile.role==='driver'?'تابع طلباتك ومركبتك':'وين ماشي اليوم؟'}</Text>
               </View>
-              <View style={s.brandBadge}><Text style={s.brandBadgeText}>أ</Text></View>
+              <View style={s.brandBadge}><Ionicons name="car-sport-outline" size={27} color={theme.deep}/></View>
             </View>}
 
             {tab==='home'&&!push.enabled&&!push.checking&&<View style={s.card}>
@@ -1458,8 +1470,8 @@ function Main() {
                  <Text style={s.badge}>{states[activeRide.status]}</Text>
                  <RideProgress status={activeRide.status}/>
                 <View style={s.tripSummary}>
-                  <Text style={s.body}>📍 الانطلاق: {activeRide.pickup}</Text>
-                  <Text style={s.body}>🏁 الوجهة: {activeRide.destination}</Text>
+                  <View style={s.detailRow}><Ionicons name="location-outline" size={18} color={G}/><Text style={[s.body,s.detailText]}>الانطلاق: {activeRide.pickup}</Text></View>
+                  <View style={s.detailRow}><Ionicons name="flag-outline" size={18} color={G}/><Text style={[s.body,s.detailText]}>الوجهة: {activeRide.destination}</Text></View>
                   {!!activeRide.pickup_note && <Text style={s.body}>مكان الالتقاء: {activeRide.pickup_note}</Text>}
                   {!!activeRide.cargo_description && <Text style={s.body}>الحمولة: {activeRide.cargo_description}</Text>}
                   {profile.role==='driver' && !!activeRide.recipient_phone && activeStates.includes(activeRide.status) && (
@@ -1467,10 +1479,10 @@ function Main() {
                       اتصال بالشخص المنتظر
                     </Button>
                   )}
-                  <Text style={s.body}>🛺 نوع المركبة: {activeRide.vehicle_kind==='rickshaw'?'ركشة':'تكتك نقل'}</Text>
-                  <Text style={s.body}>📏 المسافة: {Number(activeRoute.status==='ready'?activeRoute.distanceKm:activeRide.distance_km||0).toFixed(1)} كم {activeRoute.status==='ready'?'حسب الطريق':'(تقدير محفوظ)'}</Text>
-                   <Text style={s.body}>⏱ مدة الطريق المتوقعة: {activeRoute.status==='ready'?Math.max(1,Math.ceil(activeRoute.durationMin)):Math.max(3,Math.ceil(Number(activeRide.distance_km||0)*3))} دقيقة تقريباً {activeRoute.status==='ready'?'حسب الطريق':'(تقدير أولي)'}</Text>
-                  <Text style={s.fare}>💰 الأجرة: {activeRide.agreed_fare??activeRide.proposed_fare} ج.س</Text>
+                  <View style={s.detailRow}><MaterialCommunityIcons name={activeRide.vehicle_kind==='rickshaw'?'rickshaw':'truck-cargo-container'} size={18} color={G}/><Text style={[s.body,s.detailText]}>نوع المركبة: {activeRide.vehicle_kind==='rickshaw'?'ركشة':'تكتك نقل'}</Text></View>
+                  <View style={s.detailRow}><Ionicons name="navigate-outline" size={18} color={G}/><Text style={[s.body,s.detailText]}>المسافة: {Number(activeRoute.status==='ready'?activeRoute.distanceKm:activeRide.distance_km||0).toFixed(1)} كم {activeRoute.status==='ready'?'حسب الطريق':'(تقدير محفوظ)'}</Text></View>
+                  <View style={s.detailRow}><Ionicons name="time-outline" size={18} color={G}/><Text style={[s.body,s.detailText]}>مدة الطريق المتوقعة: {activeRoute.status==='ready'?Math.max(1,Math.ceil(activeRoute.durationMin)):Math.max(3,Math.ceil(Number(activeRide.distance_km||0)*3))} دقيقة تقريباً {activeRoute.status==='ready'?'حسب الطريق':'(تقدير أولي)'}</Text></View>
+                  <View style={s.detailRow}><Ionicons name="cash-outline" size={18} color={G}/><Text style={[s.fare,s.detailText]}>الأجرة: {activeRide.agreed_fare??activeRide.proposed_fare} ج.س</Text></View>
                 </View>
                 {profile.role==='passenger' && activeDriver && (
                   <View style={s.driverCard}>
@@ -1590,14 +1602,14 @@ function Main() {
                     SEL('dest');
                     MK(v=>v+1);
                   })}>
-                  📍 استخدام موقعي الحالي
+                  استخدام موقعي الحالي
                 </Button>
 
                 {nearby.status!=='idle' && (
                   <View style={s.tripSummary}>
                     <View style={s.optionRow}><Text style={[s.label,{flex:1}]}>المركبات المتاحة حول الانطلاق</Text><Pressable accessibilityRole="button" accessibilityLabel="تحديث المركبات القريبة" style={s.iconButton} onPress={nearby.refresh}><Ionicons name="refresh-outline" size={22} color={G}/></Pressable></View>
                     <Text style={s.body}>{nearby.status==='ready'
-                      ? '🛺 '+nearbyCount('rickshaw')+' ركشة • 📦 '+nearbyCount('cargo_tuktuk')+' تكتك شحن'
+                      ? <View style={s.optionRow}><MaterialCommunityIcons name="rickshaw" size={19} color={G}/><Text style={s.body}>{nearbyCount('rickshaw')} ركشة</Text><MaterialCommunityIcons name="truck-cargo-container" size={19} color={G}/><Text style={s.body}>{nearbyCount('cargo_tuktuk')} تكتك شحن</Text></View>
                       : nearby.status==='loading' ? 'جاري تحديث المركبات القريبة…' : 'تعذر تحميل المركبات القريبة'}</Text>
                     {nearby.status==='ready'&&<Text style={s.caption}>آخر تحديث: {new Date(nearby.updatedAt).toLocaleTimeString()} • المواقع تقريبية لحماية خصوصية الكباتن.</Text>}
                   </View>
@@ -1627,7 +1639,7 @@ function Main() {
                 </View>
 
                 <Button secondary={!forSomeone} onPress={()=>setForSomeone(value=>!value)}>
-                  {forSomeone?'الطلب لشخص آخر ✓':'اطلب لزول تاني'}
+                  {forSomeone?'تم تفعيل الطلب لشخص آخر':'اطلب لزول تاني'}
                 </Button>
                 </>}
                 {forSomeone && <Field label="رقم هاتف الشخص المنتظر" value={recipientPhone}
@@ -1763,126 +1775,88 @@ function Main() {
             {(tab==='trips' || (tab==='home' && (profile.role==='driver' || activeRide?.status==='requested'))) && <>
             <Text style={s.title}>{tab==='home' && profile.role==='driver'?'الطلبات والرحلات':'رحلاتي'}</Text>
 
-            {tab==='trips'&&<View style={s.row}>
-              {[['all','الكل'],['active','النشطة'],['completed','المكتملة'],['cancelled','الملغاة']].map(([key,label])=>
-                <Button key={key} secondary={tripFilter!==key} onPress={()=>{setTripFilter(key);setFocusedRide(null);}}>{label}</Button>)}
+            {tab==='trips'&&<View style={s.filterRow}>
+              {[['active','النشطة'],['completed','المكتملة'],['cancelled','الملغاة'],['all','الكل']].map(([key,label])=>
+                <Button key={key} secondary={tripFilter!==key} onPress={()=>{setTripFilter(key);setFocusedRide(null);setExpandedTrip(null);setTripPage(1);}}>{label}</Button>)}
             </View>}
-            {!(tab==='trips'?orderedTrips.filter(t=>tripFilter==='all'||t.id===focusedRide||
-              (tripFilter==='active'?['requested',...activeStates].includes(t.status):t.status===tripFilter)):orderedTrips).length &&
-              <Text style={s.body}>لا توجد رحلات في هذه القائمة</Text>}
-
-            {(tab==='trips'?orderedTrips.filter(t=>tripFilter==='all'||t.id===focusedRide||
-              (tripFilter==='active'?['requested',...activeStates].includes(t.status):t.status===tripFilter)):orderedTrips).map(t=>(
-              <View key={t.id} style={s.card}>
-                <Text style={t.status==='cancelled'?s.pendingBadge:s.badge}>{states[t.status]||t.status}</Text>
-
-                <Text style={s.title}>
-                  {t.pickup} ← {t.destination}
-                </Text>
-
-                <Text style={s.fare}>
-                  {t.agreed_fare??t.proposed_fare} ج.س
-                </Text>
-                {(t.passenger_id===userId||t.driver_id===userId)&&<Button secondary onPress={()=>openSupport(t.id)}>إبلاغ عن مشكلة</Button>}
-                {!!t.pickup_note && <Text style={s.body}>مكان الالتقاء: {t.pickup_note}</Text>}
-                {!!t.cargo_description && <Text style={s.body}>الحمولة: {t.cargo_description}</Text>}
-                {!!t.cargo_photo_path && (
-                  openedPhoto?.rideId===t.id ? (
-                    <Image source={{uri:openedPhoto.url}} style={s.cargoPhoto}
-                      onError={()=>setOpenedPhoto(current=>current?.rideId===t.id?null:current)}/>
-                  ) : <Button secondary disabled={busy} onPress={()=>run(()=>viewCargoPhoto(t))}>عرض صورة الحمولة</Button>
-                )}
-                {profile.role==='passenger' && ['completed','cancelled'].includes(t.status) && (
-                  <View style={s.row}>
-                    <Button secondary disabled={busy||!!activeRide} onPress={()=>repeatRide(t)}>إعادة الطلب</Button>
-                    <Button secondary disabled={busy} onPress={()=>act(async()=>{
-                      if (savedRides.some(ride=>ride.id===t.id)) {
-                        check(await db.from('saved_rides').delete().eq('user_id',userId).eq('ride_id',t.id));
-                      } else {
-                        check(await db.from('saved_rides').insert({ride_id:t.id}));
-                      }
-                    })}>{savedRides.some(ride=>ride.id===t.id)?'إزالة من المحفوظات':'حفظ المشوار'}</Button>
-                  </View>
-                )}
-                {profile.role==='passenger' && t.status==='completed' && !ratedRides.includes(t.id) && (
-                  <View style={s.rateBox}>
-                    <Text style={s.label}>قيّم تجربتك مع الكابتن</Text>
+            {!visibleTrips.length && <View style={s.emptyState}>
+              <Ionicons name="car-outline" size={34} color={theme.muted}/>
+              <Text style={s.label}>لا توجد رحلات في هذه القائمة</Text>
+              <Text style={s.caption}>ستظهر الرحلات هنا عند توفرها.</Text>
+            </View>}
+            {pagedTrips.map(t=>(
+              <View key={t.id} style={s.rideCard}>
+                <View style={s.rideCardTop}>
+                  <Text style={t.status==='cancelled'?s.pendingBadge:s.badge}>{states[t.status]||t.status}</Text>
+                  <Text style={s.fare}>{t.agreed_fare??t.proposed_fare} ج.س</Text>
+                </View>
+                <Text style={s.rideRoute}>{t.pickup} ← {t.destination}</Text>
+                <Text style={s.caption}>{t.created_at?new Date(t.created_at).toLocaleString('ar-SD'):''}</Text>
+                <Button secondary onPress={()=>setExpandedTrip(current=>current===t.id?null:t.id)}>
+                  {expandedTrip===t.id?'إخفاء التفاصيل':'عرض التفاصيل'}
+                </Button>
+                {expandedTrip===t.id && <>
+                  {(t.passenger_id===userId||t.driver_id===userId)&&<Button secondary onPress={()=>openSupport(t.id)}>إبلاغ عن مشكلة</Button>}
+                  {!!t.pickup_note && <Text style={s.body}>مكان الالتقاء: {t.pickup_note}</Text>}
+                  {!!t.cargo_description && <Text style={s.body}>الحمولة: {t.cargo_description}</Text>}
+                  {!!t.cargo_photo_path && (
+                    openedPhoto?.rideId===t.id ? (
+                      <Image source={{uri:openedPhoto.url}} style={s.cargoPhoto}
+                        onError={()=>setOpenedPhoto(current=>current?.rideId===t.id?null:current)}/>
+                    ) : <Button secondary disabled={busy} onPress={()=>run(()=>viewCargoPhoto(t))}>عرض صورة الحمولة</Button>
+                  )}
+                  {profile.role==='passenger' && ['completed','cancelled'].includes(t.status) && (
                     <View style={s.row}>
-                      {[1,2,3,4,5].map(n=><TouchableOpacity key={n} accessibilityRole="button" accessibilityLabel={n+' من 5 نجوم'} accessibilityState={{selected:ratingDraft[t.id]===n}} style={{minWidth:44,minHeight:48,alignItems:'center',justifyContent:'center'}} onPress={()=>RD(v=>({...v,[t.id]:n}))}><Text style={{fontSize:30,color:(ratingDraft[t.id]||0)>=n?'#FFB600':'#B8C2BA'}}>★</Text></TouchableOpacity>)}
+                      <Button secondary disabled={busy||!!activeRide} onPress={()=>repeatRide(t)}>إعادة الطلب</Button>
+                      <Button secondary disabled={busy} onPress={()=>act(async()=>{
+                        if (savedRides.some(ride=>ride.id===t.id)) {
+                          check(await db.from('saved_rides').delete().eq('user_id',userId).eq('ride_id',t.id));
+                        } else {
+                          check(await db.from('saved_rides').insert({ride_id:t.id}));
+                        }
+                      })}>{savedRides.some(ride=>ride.id===t.id)?'إزالة من المحفوظات':'حفظ المشوار'}</Button>
                     </View>
-                    <Button disabled={busy||!ratingDraft[t.id]} onPress={()=>act(async()=>{check(await db.from('ratings').insert({ride_id:t.id,passenger_id:session.user.id,score:ratingDraft[t.id]}));RR(v=>[...v,t.id]);})}>إرسال التقييم</Button>
-                  </View>
-                )}
-                {profile.role==='passenger' && t.status==='completed' && ratedRides.includes(t.id) && <Text style={s.success}>شكراً لتقييمك لهذه الرحلة</Text>}
-
-                {profile.role==='driver' &&
-                 driver?.approved &&
-                 t.status==='requested' && (
-                  <>
-                    <Field label="عرضك بالجنيه"
-                      value={bid[t.id]||''}
-                      onChangeText={v=>J(prev=>({
-                        ...prev,[t.id]:v
-                      }))}
-                      keyboardType="numeric"/>
-
-                    <Button disabled={busy}
-                      onPress={()=>act(async()=>{
-                        const fare=Number(
-                          bid[t.id]||t.proposed_fare
-                        );
-
-                        if(!Number.isFinite(fare)||fare<=0)
-                          throw Error('السعر غير صحيح');
-
-                        await rpc('submit_offer',{
-                          p_ride:t.id,p_fare:fare
-                        });
-                      })}>إرسال العرض</Button>
-                  </>
-                )}
-
-                {profile.role==='passenger' &&
-                 t.status==='requested' &&
-                 offers.filter(o=>o.ride_id===t.id)
-                   .sort((a,b)=>Number(a.fare)-Number(b.fare))
-                   .map((o,index)=>(
-                    <View key={o.id} style={s.offer}>
-                      <View style={s.optionRow}><View style={{flex:1}}><Text style={s.label}>عرض {index+1}{index===0?' • أقل سعر':''}</Text><Text style={s.caption}>اختر العرض المناسب. تظهر بيانات الكابتن بعد قبول العرض.</Text></View><Text style={s.fare}>{o.fare} ج.س</Text></View>
-                      <Button disabled={busy}
-                        onPress={()=>act(()=>rpc('accept_offer',{
-                          p_offer:o.id,
-                          p_expected_fare:o.fare
-                        }))}>قبول العرض</Button>
+                  )}
+                  {profile.role==='passenger' && t.status==='completed' && !ratedRides.includes(t.id) && (
+                    <View style={s.rateBox}>
+                      <Text style={s.label}>قيّم تجربتك مع الكابتن</Text>
+                      <View style={s.row}>
+                        {[1,2,3,4,5].map(n=><TouchableOpacity key={n} accessibilityRole="button" accessibilityLabel={n+' من 5 نجوم'} accessibilityState={{selected:ratingDraft[t.id]===n}} style={{minWidth:44,minHeight:44,alignItems:'center',justifyContent:'center'}} onPress={()=>RD(v=>({...v,[t.id]:n}))}><Ionicons name={(ratingDraft[t.id]||0)>=n?'star':'star-outline'} size={25} color={(ratingDraft[t.id]||0)>=n?'#D5AC53':'#B8C2BA'}/></TouchableOpacity>)}
+                      </View>
+                      <Button disabled={busy||!ratingDraft[t.id]} onPress={()=>act(async()=>{check(await db.from('ratings').insert({ride_id:t.id,passenger_id:session.user.id,score:ratingDraft[t.id]}));RR(v=>[...v,t.id]);})}>إرسال التقييم</Button>
                     </View>
-                  ))}
-
-                {profile.role==='driver' &&
-                 t.driver_id===session.user.id &&
-                 t.id!==activeRide?.id && activeStates.includes(t.status) && (
-                  <Button disabled={busy}
-                    onPress={()=>act(()=>advanceActiveRide(t))}>
-                    {t.status==='accepted'?'وصلت للموقع':
-                     t.status==='arrived'?'بدء الرحلة':
-                     'إنهاء الرحلة'}
-                  </Button>
-                )}
-
-                {profile.role==='passenger' &&
-                 t.status==='requested' && t.id!==activeRide?.id && (
-                  <Button secondary disabled={busy}
-                    onPress={()=>act(()=>rpc('advance_ride',{
-                      p_ride:t.id,
-                      p_status:'cancelled'
-                    }))}>إلغاء الطلب</Button>
-                )}
+                  )}
+                  {profile.role==='passenger' && t.status==='completed' && ratedRides.includes(t.id) && <Text style={s.success}>شكراً لتقييمك لهذه الرحلة</Text>}
+                  {profile.role==='driver' && driver?.approved && t.status==='requested' && <>
+                    <Field label="عرضك بالجنيه" value={bid[t.id]||''} onChangeText={v=>J(prev=>({...prev,[t.id]:v}))} keyboardType="numeric"/>
+                    <Button disabled={busy} onPress={()=>act(async()=>{
+                      const fare=Number(bid[t.id]||t.proposed_fare);
+                      if(!Number.isFinite(fare)||fare<=0)throw Error('السعر غير صحيح');
+                      await rpc('submit_offer',{p_ride:t.id,p_fare:fare});
+                    })}>إرسال العرض</Button>
+                  </>}
+                  {profile.role==='passenger' && t.status==='requested' &&
+                    offers.filter(o=>o.ride_id===t.id).sort((a,b)=>Number(a.fare)-Number(b.fare)).map((o,index)=>(
+                      <View key={o.id} style={s.offer}>
+                        <View style={s.optionRow}><View style={{flex:1}}><Text style={s.label}>عرض {index+1}{index===0?' • أقل سعر':''}</Text><Text style={s.caption}>اختر العرض المناسب. تظهر بيانات الكابتن بعد قبول العرض.</Text></View><Text style={s.fare}>{o.fare} ج.س</Text></View>
+                        <Button disabled={busy} onPress={()=>act(()=>rpc('accept_offer',{p_offer:o.id,p_expected_fare:o.fare}))}>قبول العرض</Button>
+                      </View>
+                    ))}
+                  {profile.role==='driver' && t.driver_id===session.user.id && t.id!==activeRide?.id && activeStates.includes(t.status) &&
+                    <Button disabled={busy} onPress={()=>act(()=>advanceActiveRide(t))}>
+                      {t.status==='accepted'?'وصلت للموقع':t.status==='arrived'?'بدء الرحلة':'إنهاء الرحلة'}
+                    </Button>}
+                  {profile.role==='passenger' && t.status==='requested' && t.id!==activeRide?.id &&
+                    <Button secondary disabled={busy} onPress={()=>act(()=>rpc('advance_ride',{p_ride:t.id,p_status:'cancelled'}))}>إلغاء الطلب</Button>}
+                </>}
               </View>
             ))}
+            {pagedTrips.length<visibleTrips.length&&<Button secondary onPress={()=>setTripPage(page=>page+1)}>تحميل المزيد من الرحلات</Button>}
             </>}
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • v0.9.0</Text>
+        <Text style={s.footer}>ARKAB • v0.9.1</Text>
       </ScrollView>
       {!!session && !!profile && <TabBar tab={tab} isDriver={profile.role==='driver'}
         onChange={key=>{D(key);if(key==='trips'||key==='notifications')refresh();}}/>}
@@ -2010,45 +1984,55 @@ const s=StyleSheet.create({
   lockPage:{flexGrow:1,justifyContent:'center',padding:24,gap:16},
   lockLogo:{width:84,height:84,resizeMode:'contain',borderRadius:20,alignSelf:'center'},
   lockBadge:{width:100,height:100,borderRadius:50,backgroundColor:theme.soft,alignSelf:'center',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:theme.border},
-  page:{padding:theme.space.md,gap:theme.space.md,paddingBottom:theme.space.lg},
-  fixedHeader:{backgroundColor:theme.deep,paddingVertical:12,paddingHorizontal:16,
-    flexDirection:'row-reverse',alignItems:'center',justifyContent:'space-between',gap:12},
+  page:{padding:16,gap:14,paddingBottom:26},
+  fixedHeader:{backgroundColor:theme.deep,paddingVertical:13,paddingHorizontal:18,
+    flexDirection:'row-reverse',alignItems:'center',justifyContent:'space-between',gap:12,
+    borderBottomWidth:1,borderBottomColor:'#1E5B45'},
   headerBrand:{flex:1,flexDirection:'row-reverse',alignItems:'center',gap:12},
-  logo:{width:48,height:48,borderRadius:12,resizeMode:'contain',backgroundColor:theme.surface},
-  brand:{color:theme.surface,fontSize:22,fontWeight:'900',textAlign:'right'},
-  muted:{color:'#DDEBE4',fontSize:12,textAlign:'right'},
-  headerAction:{paddingHorizontal:12,paddingVertical:12,borderRadius:12,backgroundColor:'#185B46'},
+  logo:{width:44,height:44,borderRadius:14,resizeMode:'contain',backgroundColor:theme.surface},
+  brand:{color:theme.surface,fontSize:21,fontWeight:'900',textAlign:'right'},
+  muted:{color:'#DDEBE4',fontSize:11,textAlign:'right'},
+  headerAction:{width:46,height:46,borderRadius:16,backgroundColor:'#1C5A43',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:'#36765C'},
   headerActionText:{color:theme.surface,fontWeight:'700',fontSize:12},
-  welcome:{flexDirection:'row-reverse',alignItems:'center',gap:12,paddingVertical:4},
+  welcome:{flexDirection:'row-reverse',alignItems:'center',gap:12,paddingVertical:7},
   eyebrow:{color:G,fontWeight:'700',fontSize:13,textAlign:'right'},
-  brandBadge:{width:48,height:48,borderRadius:24,backgroundColor:theme.warning,justifyContent:'center',alignItems:'center'},
-  brandBadgeText:{color:theme.deep,fontSize:25,fontWeight:'900'},
-  card:{backgroundColor:theme.surface,padding:theme.space.md,gap:12,borderRadius:theme.radius.lg,
-    borderWidth:1,borderColor:theme.border},
-  title:{color:theme.ink,fontSize:22,fontWeight:'800',textAlign:'right',lineHeight:30},
-  label:{color:theme.ink,fontSize:15,fontWeight:'700',textAlign:'right'},
-  body:{color:theme.muted,fontSize:15,textAlign:'right',lineHeight:23},
-  caption:{color:theme.muted,fontSize:13,textAlign:'right',lineHeight:20},
-  input:{backgroundColor:theme.background,borderRadius:theme.radius.sm,padding:14,minHeight:52,textAlign:'right',
-    color:theme.ink,fontSize:16,borderWidth:1,borderColor:theme.border},
-  button:{backgroundColor:G,padding:14,minHeight:48,borderRadius:theme.radius.sm,alignItems:'center',justifyContent:'center',flexGrow:1},
+  brandBadge:{width:52,height:52,borderRadius:18,backgroundColor:theme.warning,justifyContent:'center',alignItems:'center',borderWidth:1,borderColor:'#E9D9A8'},
+  card:{backgroundColor:theme.surface,padding:16,gap:12,borderRadius:20,
+    borderWidth:1,borderColor:theme.border,shadowColor:'#123B2C',shadowOpacity:0.045,shadowRadius:12,shadowOffset:{width:0,height:4},elevation:2},
+  title:{color:theme.ink,fontSize:21,fontWeight:'800',textAlign:'right',lineHeight:30},
+  label:{color:theme.ink,fontSize:14,fontWeight:'700',textAlign:'right'},
+  body:{color:theme.muted,fontSize:14,textAlign:'right',lineHeight:22},
+  caption:{color:theme.muted,fontSize:12,textAlign:'right',lineHeight:18},
+  input:{backgroundColor:theme.surface,borderRadius:14,paddingHorizontal:15,paddingVertical:12,minHeight:54,textAlign:'right',
+    color:theme.ink,fontSize:15,borderWidth:1,borderColor:theme.border},
+  button:{backgroundColor:G,paddingHorizontal:16,paddingVertical:13,minHeight:50,borderRadius:14,alignItems:'center',justifyContent:'center',flexGrow:1},
   secondary:{backgroundColor:theme.soft,borderWidth:1,borderColor:theme.border},
   buttonText:{color:theme.surface,fontWeight:'700',fontSize:15,textAlign:'center'},
   secondaryText:{color:G},
-  row:{flexDirection:'row-reverse',flexWrap:'wrap',gap:8},
-  mapBox:{borderRadius:theme.radius.md,overflow:'hidden',borderWidth:1,borderColor:theme.border},
-  map:{width:'100%',height:355},
-  mapControl:{position:'absolute',right:12,top:12,width:48,height:48,borderRadius:24,backgroundColor:'#fff',alignItems:'center',justifyContent:'center',elevation:3},
+  row:{flexDirection:'row-reverse',flexWrap:'wrap',gap:10},
+  filterRow:{flexDirection:'row-reverse',flexWrap:'wrap',gap:7},
+  mapBox:{borderRadius:20,overflow:'hidden',borderWidth:1,borderColor:theme.border},
+  map:{width:'100%',height:315},
+  mapControl:{position:'absolute',right:12,top:12,width:46,height:46,borderRadius:16,backgroundColor:'#FFFFFF',alignItems:'center',justifyContent:'center',elevation:3,shadowColor:'#000',shadowOpacity:0.1,shadowRadius:8,shadowOffset:{width:0,height:2}},
   mapError:{position:'absolute',left:12,right:12,bottom:35,padding:12,borderRadius:12,backgroundColor:theme.surface,gap:8},
-  iconButton:{minWidth:48,minHeight:48,alignItems:'center',justifyContent:'center'},
-  syncBanner:{flexDirection:'row-reverse',alignItems:'center',gap:8,backgroundColor:theme.warning,borderRadius:12,padding:10},
-  optionRow:{flexDirection:'row-reverse',alignItems:'center',gap:10,minHeight:48},
+  iconButton:{minWidth:46,minHeight:46,alignItems:'center',justifyContent:'center',borderRadius:14,backgroundColor:theme.soft},
+  syncBanner:{flexDirection:'row-reverse',alignItems:'center',gap:10,backgroundColor:theme.warning,borderRadius:16,padding:12,borderWidth:1,borderColor:'#F0DDA9'},
+  optionRow:{flexDirection:'row-reverse',alignItems:'center',gap:10,minHeight:46},
+  detailRow:{flexDirection:'row-reverse',alignItems:'center',gap:9,minHeight:28},
+  detailText:{flex:1},
   progressRow:{flexDirection:'row-reverse',justifyContent:'space-between',gap:2},
   progressItem:{flex:1,alignItems:'center',gap:5},
   progressDot:{width:26,height:26,borderRadius:13,backgroundColor:theme.border,alignItems:'center',justifyContent:'center'},
   attribution:{color:theme.muted,fontSize:10,padding:5,backgroundColor:theme.surface},
-  pin:{width:34,height:34,borderRadius:17,alignItems:'center',justifyContent:'center',borderWidth:2,borderColor:theme.surface},
-  fare:{fontSize:21,color:G,fontWeight:'800',textAlign:'right'},
+  pinWrap:{position:'relative',alignItems:'center',justifyContent:'center'},
+  pin:{width:38,height:38,borderRadius:19,alignItems:'center',justifyContent:'center',borderWidth:2,borderColor:theme.surface,elevation:4,shadowColor:'#000',shadowOpacity:0.18,shadowRadius:5,shadowOffset:{width:0,height:2}},
+  pinCount:{position:'absolute',top:-7,right:-8,minWidth:18,height:18,paddingHorizontal:4,borderRadius:9,backgroundColor:theme.deep,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:'#FFFFFF'},
+  pinCountText:{color:'#FFFFFF',fontSize:10,fontWeight:'800'},
+  fare:{fontSize:19,color:G,fontWeight:'800',textAlign:'right'},
+  rideCard:{backgroundColor:theme.surface,padding:14,borderRadius:18,borderWidth:1,borderColor:theme.border,gap:9,shadowColor:'#123B2C',shadowOpacity:0.035,shadowRadius:8,shadowOffset:{width:0,height:3},elevation:1},
+  rideCardTop:{flexDirection:'row-reverse',alignItems:'center',justifyContent:'space-between',gap:10},
+  rideRoute:{fontSize:16,color:theme.ink,fontWeight:'800',textAlign:'right',lineHeight:24},
+  emptyState:{alignItems:'center',justifyContent:'center',gap:8,paddingVertical:30,paddingHorizontal:18,backgroundColor:theme.surface,borderRadius:18,borderWidth:1,borderColor:theme.border},
   tripSummary:{backgroundColor:theme.soft,padding:12,borderRadius:theme.radius.md,gap:8},
   driverCard:{flexDirection:'row-reverse',alignItems:'center',gap:12,backgroundColor:theme.background,padding:12,borderRadius:theme.radius.md},
   driverAvatar:{width:58,height:58,borderRadius:29},
@@ -2065,21 +2049,21 @@ const s=StyleSheet.create({
   error:{color:theme.danger,backgroundColor:'#FCE8E6',padding:12,borderRadius:10,textAlign:'right'},
   success:{color:G,backgroundColor:theme.soft,padding:12,borderRadius:10,textAlign:'right'},
   footer:{textAlign:'center',color:theme.muted,fontSize:12},
-  tabBar:{flexDirection:'row-reverse',paddingHorizontal:6,paddingVertical:8,backgroundColor:theme.surface,borderTopWidth:1,borderColor:theme.border,gap:2},
-  tabItem:{flex:1,minHeight:58,paddingVertical:5,paddingHorizontal:2,alignItems:'center',justifyContent:'center',gap:2,borderRadius:theme.radius.sm},
+  tabBar:{flexDirection:'row-reverse',paddingHorizontal:10,paddingTop:9,paddingBottom:8,backgroundColor:theme.surface,borderTopWidth:1,borderColor:theme.border,gap:4,elevation:12,shadowColor:'#102D22',shadowOpacity:0.06,shadowRadius:10,shadowOffset:{width:0,height:-3}},
+  tabItem:{flex:1,minHeight:58,paddingVertical:7,paddingHorizontal:3,alignItems:'center',justifyContent:'center',gap:4,borderRadius:16},
   tabActive:{backgroundColor:theme.soft},
   tabIcon:{color:theme.muted,fontSize:23,fontWeight:'700',lineHeight:27},
-  tabLabel:{color:theme.muted,fontSize:12,fontWeight:'600',textAlign:'center'},
+  tabLabel:{color:theme.muted,fontSize:10,fontWeight:'600',textAlign:'center'},
   tabSelected:{color:G,fontWeight:'800'},
-  vehicleChoice:{flex:1,minWidth:120,backgroundColor:theme.background,borderWidth:1,borderColor:theme.border,borderRadius:theme.radius.md,padding:12,gap:5},
+  vehicleChoice:{flex:1,minWidth:120,backgroundColor:theme.surface,borderWidth:1,borderColor:theme.border,borderRadius:18,padding:14,gap:7},
   vehicleSelected:{borderColor:G,borderWidth:2,backgroundColor:theme.soft},
   vehicleTop:{flexDirection:'row-reverse',alignItems:'center',justifyContent:'space-between'},
   vehicleGlyph:{fontSize:34,color:G},
   radio:{width:20,height:20,borderRadius:10,borderWidth:1,borderColor:theme.muted,alignItems:'center',justifyContent:'center'},
   radioSelected:{borderColor:G,borderWidth:2},
   radioDot:{width:10,height:10,borderRadius:5,backgroundColor:G},
-  badge:{alignSelf:'flex-end',color:G,backgroundColor:theme.soft,paddingHorizontal:10,paddingVertical:6,borderRadius:12,fontSize:12,fontWeight:'700'},
-  pendingBadge:{alignSelf:'flex-end',color:'#775717',backgroundColor:theme.warning,paddingHorizontal:10,paddingVertical:6,borderRadius:12,fontSize:12,fontWeight:'700'},
+  badge:{alignSelf:'flex-end',color:G,backgroundColor:theme.soft,paddingHorizontal:11,paddingVertical:6,borderRadius:10,fontSize:11,fontWeight:'800',overflow:'hidden'},
+  pendingBadge:{alignSelf:'flex-end',color:'#775717',backgroundColor:theme.warning,paddingHorizontal:11,paddingVertical:6,borderRadius:10,fontSize:11,fontWeight:'800',overflow:'hidden'},
   chatBubble:{maxWidth:'90%',padding:12,borderRadius:theme.radius.md,gap:3},
   chatMine:{alignSelf:'flex-end',backgroundColor:theme.soft},
   chatOther:{alignSelf:'flex-start',backgroundColor:theme.background,borderWidth:1,borderColor:theme.border},
