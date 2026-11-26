@@ -26,6 +26,7 @@ const sandbox={Deno:{env:{get:()=> 'https://fake.example'},serve:fn=>{handler=fn
   if(url.includes('/auth/v1/user'))return response({email_confirmed_at:'2026-01-01',app_metadata:{arkab_admin:true}});
   dbRequests.push({url,method:opts.method,body:opts.body});
   if(url.includes('/rest/v1/rides?'))return response([{id:rideId,agreed_fare:1000,vehicle_kind:'rickshaw',completed_at:'2026-01-01'}]);
+  if(url.includes('/rest/v1/account_deletion_requests?'))return response([{user_id:rideId,requested_at:'2026-01-01',status:opts.method==='PATCH'?'reviewing':'requested'}]);
   if(opts.method==='GET')return response([]);
   return response([JSON.parse(opts.body)]);
 }};
@@ -38,4 +39,6 @@ res=await call({action:'commission_list'});assert.equal(res.status,200);assert.e
 res=await call({action:'commission_save',ride_id:rideId,amount:100});assert.equal(res.status,200);
 res=await call({action:'commission_save',ride_id:rideId,amount:1100});assert.equal(res.status,400);
 assert.equal(dbRequests.filter(r=>r.method==='POST'&&r.url.includes('/commissions?')).length,1);
+res=await call({action:'deletion_requests_list'});assert.equal(res.status,200);assert.equal((await res.json()).rows.length,1);
+res=await call({action:'deletion_request_review',user_id:rideId});assert.equal(res.status,200);assert.deepEqual(await res.json(),{ok:true});
 console.log('PASS: SDG validation, Arabic digits, estimates, admin pricing & completed-ride commission checks (mocked).');

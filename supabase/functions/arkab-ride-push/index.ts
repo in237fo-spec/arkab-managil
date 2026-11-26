@@ -55,10 +55,12 @@ Deno.serve(async request=>{
       body:JSON.stringify(data),
       signal:AbortSignal.timeout(10000)
     });
+    // Bound retries on explicit transient server responses. Requests with
+    // ambiguous transport failures are not automatically replayed here.
     let response=await send();
-    if(response.status===429){
+    for(let attempt=0;attempt<2&&(response.status===429||response.status>=500);attempt++){
       await response.body?.cancel();
-      await new Promise(resolve=>setTimeout(resolve,1000));
+      await new Promise(resolve=>setTimeout(resolve,1000*2**attempt));
       response=await send();
     }
     if (!response.ok) {
@@ -66,9 +68,15 @@ Deno.serve(async request=>{
       return new Response(null,{status:502});
     }
     const tickets=await response.json();
-    for (const ticket of tickets.data ?? []) {
+    const list=Array.isArray(tickets.data)?tickets.data:[];
+    const accepted=list.filter(ticket=>ticket.status==='ok').length;
+    const rejected=list.filter(ticket=>ticket.status==='error').length;
+    // Ticket acceptance is not delivery; log only counts and error codes.
+    console.info('Expo push ticket summary',{accepted,rejected,expected:data.length});
+    for (const ticket of list) {
       if (ticket.status==='error') console.error('Expo push ticket rejected',ticket.details?.error);
     }
+    if(list.length!==data.length||accepted===0)return new Response(null,{status:502});
     return new Response(null,{status:204});
   } catch {
     console.error('Expo push send failed');

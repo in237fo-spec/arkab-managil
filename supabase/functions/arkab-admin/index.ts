@@ -31,6 +31,14 @@ const rows=await db(b.table+'?id=eq.'+b.id,'PATCH',patch);if(rows.length!==1)ret
 const uuid=(v:unknown)=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 const money=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1e9;
 // Dedicated minimal administrative reads: no rider contacts or unrelated records.
+if(b.action==='deletion_requests_list'){
+return out({rows:await db('account_deletion_requests?select=user_id,requested_at,status&order=requested_at.asc&limit=100')});
+}
+if(b.action==='deletion_request_review'&&uuid(b.user_id)){
+const rows=await db('account_deletion_requests?user_id=eq.'+b.user_id+'&status=eq.requested','PATCH',{status:'reviewing'});
+if(rows.length!==1)return out({error:'pending request not found'},404);
+return out({ok:true});
+}
 if(b.action==='pricing_list'){
 return out({rows:await db('pricing?select=vehicle_kind,base_fare,per_km,active&order=vehicle_kind.asc')});
 }

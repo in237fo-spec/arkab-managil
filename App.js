@@ -23,6 +23,7 @@ import {useFonts} from 'expo-font';
 import {useRoadRoute} from './roadRoute';
 import {createRefreshQueue} from './refreshQueue';
 import {parseFare} from './pricingLogic';
+import {readDeletionRequest,submitDeletionRequest} from './accountDeletion';
 import {useBiometricGate} from './biometricGate';
 import {registerPassengerShareTask,beginPassengerShare,endPassengerShare,stopNativeShare,reconcilePassengerShare,usePassengerShare,shareReady,makeTrackingLink,activeShareLink,trackingViewer,useEarnings,useSupportTickets,supportCategories,supportStatuses,validateTicket} from './v09Services';
 const Cairo_400Regular=require('@expo-google-fonts/cairo/400Regular/Cairo_400Regular.ttf');
@@ -1417,6 +1418,7 @@ function Main() {
                 <Text style={s.caption}>يبقى تسجيل الدخول بكلمة المرور متاحاً. لا يخزن أركب البصمة ولا يرسلها إلى الخادم.</Text>
               </View>
               <Button secondary onPress={()=>openSupport()}>الدعم الفني والشكاوى</Button>
+              <Button secondary onPress={()=>D('privacy')}>الخصوصية وحذف الحساب</Button>
               {profile.role==='driver'&&<Button secondary onPress={()=>D('earnings')}>لوحة الأرباح</Button>}
                {profile.role==='driver' && <Text style={s.caption}>بيانات المركبات والاعتماد بالأسفل.</Text>}
               <Button secondary disabled={busy} onPress={()=>run(async()=>{
@@ -1431,6 +1433,7 @@ function Main() {
               })}>تسجيل الخروج</Button>
             </View>}
 
+            {tab==='privacy'&&<PrivacyPanel key={userId} db={db} userId={userId} onBack={()=>D('account')}/>}
             {tab==='support'&&<SupportPanel key={userId} db={db} userId={userId} rideId={supportRide} onBack={()=>D('account')}/>}
             {tab==='earnings'&&profile.role==='driver'&&<EarningsPanel summary={earnings} period={earningsPeriod} onPeriod={setEarningsPeriod} onBack={()=>D('account')}/>}
             {tab==='favorites' && <>
@@ -1951,6 +1954,42 @@ function EarningsPanel({summary,period,onPeriod,onBack}){
     </>}
     {summary.status==='error'&&<Text style={s.error}>تعذر تحميل الأرباح. تأكد من الاتصال أو تفعيل ميزة الأرباح من الإدارة.</Text>}
     <Button secondary onPress={summary.refresh}>تحديث الأرباح</Button><Button secondary onPress={onBack}>العودة للحساب</Button>
+  </View>;
+}
+
+function PrivacyPanel({db,userId,onBack}){
+  const [record,setRecord]=useState(null),[phase,setPhase]=useState('loading'),[posting,setPosting]=useState(false);
+  const [error,setError]=useState('');const alive=useRef(true),pending=useRef(false);
+  async function load(){
+    setPhase('loading');setError('');
+    try{const data=await readDeletionRequest(db,userId);if(alive.current){setRecord(data);setPhase('ready');}}
+    catch{if(alive.current){setPhase('error');setError('تعذر التحقق من حالة طلبك. حاول مجدداً.');}}
+  }
+  useEffect(()=>{alive.current=true;void load();return()=>{alive.current=false;};},[userId]);
+  async function send(){
+    if(pending.current||record)return;pending.current=true;setPosting(true);setError('');
+    try{const data=await submitDeletionRequest(db,userId);if(alive.current){setRecord(data);setPhase('ready');}}
+    catch{if(alive.current)setError('لم نستطع تأكيد تسجيل الطلب. تحقق من الاتصال ثم حاول مرة أخرى.');}
+    finally{pending.current=false;if(alive.current)setPosting(false);}
+  }
+  function confirm(){
+    Alert.alert('طلب حذف الحساب','سيُرسل طلب حذف حسابك والبيانات المرتبطة به إلى إدارة أركب للمراجعة. هذا ليس حذفاً فورياً. يرجى إنهاء الرحلة النشطة قبل إتمام الحذف.',[
+      {text:'إلغاء',style:'cancel'},{text:'إرسال الطلب',style:'destructive',onPress:()=>void send()}
+    ],{cancelable:true});
+  }
+  return <View style={s.card}>
+    <Text style={s.title}>الخصوصية وحذف الحساب</Text>
+    <Text style={s.body}>يجمع أركب بيانات الحساب والموقع والرحلات لتقديم خدمة النقل. تستطيع إيقاف مشاركة موقعك، وتعديل أذونات الهاتف من الإعدادات، والتواصل مع الدعم بشأن بياناتك.</Text>
+    <Text style={s.caption}>البصمة اختيارية وتظل ضمن نظام الهاتف. لا يرسل التطبيق بيانات بصمتك إلى الخادم.</Text>
+    <View style={s.tripSummary}><Text style={s.label}>طلب حذف الحساب والبيانات المرتبطة به</Text>
+      <Text style={s.caption}>يتم تسجيل طلبك لمراجعته من الإدارة؛ لا يعني التسجيل أن الحساب حُذف بالفعل. قد توجد رحلة نشطة أو بيانات مشتركة تحتاج إلى معالجة.</Text>
+      {phase==='loading'&&<ActivityIndicator color={G}/>}
+      {record&&<><Text style={s.label}>{record.status==='reviewing'?'الطلب قيد المراجعة':'تم تسجيل طلب الحذف'}</Text><Text style={s.body}>تاريخ الطلب: {new Date(record.requested_at).toLocaleString('ar-SD')}</Text></>}
+      {phase==='ready'&&!record&&<Button secondary disabled={posting} onPress={confirm}>{posting?'جارٍ إرسال الطلب…':'طلب حذف الحساب'}</Button>}
+      {!!error&&<Text style={s.error}>{error}</Text>}
+      {phase==='error'&&<Button secondary onPress={load}>إعادة المحاولة</Button>}
+    </View>
+    <Button secondary onPress={onBack}>العودة للحساب</Button>
   </View>;
 }
 
