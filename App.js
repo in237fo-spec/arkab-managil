@@ -12,6 +12,7 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import * as ImagePicker from 'expo-image-picker';
 import * as Crypto from 'expo-crypto';
+import * as Notifications from 'expo-notifications';
 import {coordinate,estimateFare,useNearbyVehicles,useAvailableDriverLocation,useRidePush} from './rideFeatures';
 import {Map, Camera, Marker} from '@maplibre/maplibre-react-native';
 import {createClient} from '@supabase/supabase-js';
@@ -116,7 +117,7 @@ function TabBar({tab,onChange,isDriver}) {
   const items = [
     ['home','⌂',isDriver?'الرئيسية':'الرئيسية'],
     ['trips','≡','رحلاتي'],
-    ['wallet','▣','الدفع'],
+    ['favorites','☆',isDriver?'المساعدة':'المفضلة'],
     ['notifications','◉','التنبيهات'],
     ['account','●','حسابي']
   ];
@@ -143,6 +144,78 @@ function VehicleChoice({kind,selected,onPress}) {
     <Text style={s.label}>{cargo?'تكتك نقل':'ركشة'}</Text>
     <Text style={s.caption}>{cargo?'لنقل الأغراض والحمولات':'للمشاوير اليومية'}</Text>
   </Pressable>;
+}
+
+function RideChat({rideId,userId}) {
+  const [messages,setMessages]=useState([]);
+  const [message,setMessage]=useState('');
+  const [chatState,setChatState]=useState('loading');
+  const [sending,setSending]=useState(false);
+  const [sendError,setSendError]=useState('');
+  useEffect(()=>{
+    let alive=true,pending=false;
+    async function loadChat(){
+      if(pending||!alive) return;
+      pending=true;
+      try {
+        const {data,error}=await db.from('ride_messages')
+          .select('id,sender_id,body,created_at').eq('ride_id',rideId)
+          .order('created_at',{ascending:false}).limit(40);
+        if(!alive) return;
+        if(error) { setChatState('unavailable'); return; }
+        setMessages((data||[]).reverse());
+        setChatState('ready');
+      } catch {if(alive)setChatState('unavailable');}
+      finally{pending=false;}
+    }
+    loadChat();
+    const timer=setInterval(loadChat,6000);
+    const channel=db.channel('ride-chat-'+rideId)
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'ride_messages',filter:'ride_id=eq.'+rideId},loadChat)
+      .subscribe();
+    return ()=>{alive=false;clearInterval(timer);db.removeChannel(channel);};
+  },[rideId,userId]);
+  async function send(){
+    const body=message.trim();
+    if(!body||sending||chatState!=='ready')return;
+    setSending(true);setSendError('');
+    try{
+      const row=check(await db.from('ride_messages').insert({ride_id:rideId,body})
+        .select('id,sender_id,body,created_at').single());
+      setMessages(prev=>[...prev.filter(m=>m.id!==row.id),row].slice(-40));
+      setMessage('');
+    }catch{setSendError('تعذر إرسال الرسالة. حاول مجدداً.');}
+    finally{setSending(false);}
+  }
+  return <View style={s.card}>
+    <Text style={s.title}>محادثة الرحلة</Text>
+    {chatState==='loading' && <ActivityIndicator color={G}/>}
+    {chatState==='unavailable' && <Text style={s.caption}>المحادثة غير متاحة حالياً. استخدم الاتصال بالكابتن عند الحاجة.</Text>}
+    {chatState==='ready' && <>
+      {!messages.length&&<Text style={s.caption}>ابدأ المحادثة مع الطرف الآخر.</Text>}
+      {messages.map(m=><View key={m.id} style={[s.chatBubble,m.sender_id===userId?s.chatMine:s.chatOther]}>
+        <Text style={s.body}>{m.body}</Text>
+        <Text style={s.caption}>{new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</Text>
+      </View>)}
+      <Field label="رسالة" placeholder="اكتب رسالتك…" value={message} onChangeText={setMessage} maxLength={500}/>
+      {!!sendError&&<Text style={s.error}>{sendError}</Text>}
+      <Button disabled={sending||!message.trim()} onPress={send}>{sending?'جارٍ الإرسال…':'إرسال الرسالة'}</Button>
+    </>}
+  </View>;
+}
+
+function parseSchedule(value){
+  const m=/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/.exec(value.trim());
+  if(!m) return null;
+  const y=+m[1],month=+m[2]-1,d=+m[3],h=+m[4],min=+m[5];
+  const date=new Date(y,month,d,h,min);
+  return date.getFullYear()===y&&date.getMonth()===month&&date.getDate()===d&&
+    date.getHours()===h&&date.getMinutes()===min?date:null;
+}
+
+function localDateLabel(date){
+  const d=new Date(date);
+  return d.toLocaleString('ar-SD');
 }
 
 function Field({
@@ -298,6 +371,14 @@ function Main() {
   const [savedRides,setSavedRides] = useState([]);
   const [notifications,setNotifications] = useState([]);
   const [focusedRide,setFocusedRide] = useState(null);
+  const [savedPlaces,setSavedPlaces] = useState({});
+  const [scheduledRides,setScheduledRides] = useState([]);
+  const [scheduleDate,setScheduleDate] = useState('');
+  const [scheduleOpen,setScheduleOpen] = useState(false);
+  const [emergencyPhone,setEmergencyPhone] = useState('');
+  const [localReady,setLocalReady] = useState(false);
+  const [chatOpen,setChatOpen] = useState(false);
+  const [tripFilter,setTripFilter] = useState('all');
 
   const [trips,U] = useState([]);
   const [offers,H] = useState([]);
@@ -328,6 +409,25 @@ function Main() {
   const km = distanceKm(pickupPoint,destPoint);
   const estimate = estimateFare(pricing,vehicle,pickupPoint && destPoint ? km : null);
   const userId = session?.user.id;
+  const localKey = (name)=>'arkab.v07.'+userId+'.'+name;
+  useEffect(()=>{
+    let alive=true;
+    setLocalReady(false);setSavedPlaces({});setScheduledRides([]);setEmergencyPhone('');setScheduleOpen(false);setChatOpen(false);
+    if(!userId)return;
+    async function loadLocal(){
+      try{
+        const [places,schedules,phone]=await Promise.all([
+          SecureStore.getItemAsync(localKey('places')),
+          SecureStore.getItemAsync(localKey('schedules')),
+          SecureStore.getItemAsync(localKey('emergency'))
+        ]);
+        if(alive){setSavedPlaces(JSON.parse(places||'{}'));setScheduledRides(JSON.parse(schedules||'[]'));setEmergencyPhone(phone||'');setLocalReady(true);}
+      }catch{if(alive)E('تعذر تحميل البيانات المحفوظة على الجهاز');}
+    }
+    void loadLocal();
+    return()=>{alive=false;};
+  },[userId]);
+  useEffect(()=>{setChatOpen(false);},[activeRide?.id]);
   const nearby = useNearbyVehicles(db,profile?.role==='passenger' && !activeRide && tab==='home' ? userId : null,pickupPoint || nearbyAnchor);
   const nearbyCount = kind => nearby.rows.filter(row=>row.kind===kind)
     .reduce((total,row)=>total+row.vehicle_count,0);
@@ -698,6 +798,86 @@ function Main() {
     DP(null); SH(false);
   }
 
+  async function savePlace(name){
+    if(!localReady)throw Error('انتظر تحميل الأماكن المحفوظة');
+    const point=selectPoint==='dest'?destPoint:pickupPoint;
+    const label=selectPoint==='dest'?dest:pickup;
+    if(!point||!label.trim())throw Error('حدد الموقع على الخريطة واكتب اسمه أولاً');
+    const next={...savedPlaces,[name]:{point,label:label.trim().slice(0,140)}};
+    await SecureStore.setItemAsync(localKey('places'),JSON.stringify(next));
+    setSavedPlaces(next);SN('تم حفظ الموقع على هذا الجهاز');
+  }
+
+  function usePlace(name){
+    if(activeRide){E('أنهِ الرحلة الحالية أولاً');return;}
+    const place=savedPlaces[name];
+    if(!place)return;
+    if(selectPoint==='pickup'){AP(place.point);A(place.label);SEL('dest');}
+    else {BP(place.point);B(place.label);}
+    MK(v=>v+1);D('home');
+  }
+
+  async function removePlace(name){
+    const next={...savedPlaces};delete next[name];
+    await SecureStore.setItemAsync(localKey('places'),JSON.stringify(next));
+    setSavedPlaces(next);
+  }
+
+  async function saveSchedule(){
+    if(!localReady)throw Error('انتظر تحميل المشاوير المحفوظة');
+    if(!pickupPoint||!destPoint||!pickup.trim()||!dest.trim())throw Error('حدد نقطتي المشوار واكتب أسماءهما');
+    if(scheduledRides.length>=3)throw Error('يمكن حفظ ثلاثة مشاوير مؤجلة. احذف مشواراً قديماً أولاً.');
+    const when=parseSchedule(scheduleDate);
+    if(!when||when.getTime()<Date.now()+60000)throw Error('أدخل موعداً مستقبلياً صحيحاً بصيغة سنة-شهر-يوم ساعة:دقيقة');
+    if(cargoPhoto)throw Error('أزل صورة الحمولة قبل حفظ المسودة، ويمكن إضافتها عند الطلب');
+    const item={id:Crypto.randomUUID(),when:when.getTime(),pickup:pickup.trim().slice(0,140),destination:dest.trim().slice(0,140),
+      pickupPoint,destPoint,vehicle,price:price.trim().slice(0,20),pickupNote:pickupNote.trim().slice(0,240),
+      cargoDescription:cargoDescription.trim().slice(0,180),forSomeone,recipientPhone:forSomeone?recipientPhone.trim().slice(0,13):'',notificationId:null};
+    let notified=false;
+    try{
+      await Notifications.setNotificationChannelAsync('arkab-reminders',{name:'تذكير المشاوير',importance:Notifications.AndroidImportance.DEFAULT});
+      let permissions=await Notifications.getPermissionsAsync();
+      if(permissions.status!=='granted')permissions=await Notifications.requestPermissionsAsync();
+      if(permissions.status==='granted'){
+        item.notificationId=await Notifications.scheduleNotificationAsync({
+          content:{title:'حان موعد مشوارك',body:'افتح أركب وراجع تفاصيل المشوار المحفوظ لتأكيد طلبه.'},
+          trigger:{type:Notifications.SchedulableTriggerInputTypes.DATE,date:when,channelId:'arkab-reminders'}
+        });
+        notified=true;
+      }
+    }catch{/* draft remains usable when scheduling is not available */}
+    const next=[...scheduledRides,item].sort((x,y)=>x.when-y.when);
+    try{await SecureStore.setItemAsync(localKey('schedules'),JSON.stringify(next));}
+    catch(e){if(item.notificationId)await Notifications.cancelScheduledNotificationAsync(item.notificationId).catch(()=>{});throw e;}
+    setScheduledRides(next);setScheduleOpen(false);setScheduleDate('');
+    SN(notified?'تم حفظ المشوار وتفعيل التذكير. أكّد الطلب عند الموعد.':'تم حفظ المشوار دون إشعار؛ راجع المفضلة عند الموعد.');
+    D('favorites');
+  }
+
+  function restoreSchedule(item){
+    if(activeRide){E('أنهِ الرحلة الحالية قبل طلب مشوار آخر');return;}
+    clearRideDraft();
+    A(item.pickup);B(item.destination);AP(item.pickupPoint);BP(item.destPoint);V(item.vehicle);
+    Q(item.price||'');setPickupNote(item.pickupNote||'');setCargoDescription(item.cargoDescription||'');
+    setForSomeone(!!item.forSomeone);setRecipientPhone(item.recipientPhone||'+249');
+    MK(v=>v+1);D('home');SN('راجع التفاصيل ثم اضغط اطلب مشوارك');
+  }
+
+  async function removeSchedule(item){
+    const next=scheduledRides.filter(r=>r.id!==item.id);
+    await SecureStore.setItemAsync(localKey('schedules'),JSON.stringify(next));
+    if(item.notificationId)await Notifications.cancelScheduledNotificationAsync(item.notificationId).catch(()=>{});
+    setScheduledRides(next);
+  }
+
+  async function saveEmergency(){
+    if(!localReady)throw Error('انتظر تحميل الحساب');
+    const phone=emergencyPhone.trim();
+    if(phone&&!/^\+249\d{9}$/.test(phone))throw Error('أدخل رقم جهة الاتصال بصيغة +249XXXXXXXXX');
+    await SecureStore.setItemAsync(localKey('emergency'),phone);
+    SN(phone?'تم حفظ جهة الاتصال':'تم حذف جهة الاتصال');
+  }
+
   function clearRideDraft() {
     A('');
     B('');
@@ -954,32 +1134,48 @@ function Main() {
               })}>تسجيل الخروج</Button>
             </View>}
 
-            {tab==='wallet' && <>
-              <View style={s.walletHero}>
-                <Text style={s.walletEyebrow}>أركب • الدفع</Text>
-                <Text style={s.walletTitle}>طرق الدفع</Text>
-                <Text style={s.walletText}>اختر الطريقة المتاحة عند تسوية مشوارك.</Text>
-              </View>
+            {tab==='favorites' && <>
+              {profile.role==='passenger' && <>
+                <View style={s.card}>
+                  <Text style={s.title}>الأماكن المفضلة</Text>
+                  <Text style={s.caption}>احفظ المنزل والعمل من شاشة طلب المشوار بعد تحديد الموقع.</Text>
+                  {['home','work'].map(key=><View key={key} style={s.tripSummary}>
+                    <Text style={s.label}>{key==='home'?'المنزل':'العمل'}</Text>
+                    <Text style={s.body}>{savedPlaces[key]?.label||'لم يتم حفظ الموقع'}</Text>
+                    {savedPlaces[key]&&<View style={s.row}>
+                      <Button disabled={!localReady||!!activeRide} onPress={()=>{SEL('pickup');if(activeRide)return;AP(savedPlaces[key].point);A(savedPlaces[key].label);SEL('dest');MK(v=>v+1);D('home');}}>الانطلاق من هنا</Button>
+                      <Button secondary disabled={!localReady||!!activeRide} onPress={()=>{BP(savedPlaces[key].point);B(savedPlaces[key].label);SEL('pickup');MK(v=>v+1);D('home');}}>اجعلها الوجهة</Button>
+                      <Button secondary disabled={busy||!localReady} onPress={()=>run(()=>removePlace(key))}>إزالة</Button>
+                    </View>}
+                  </View>)}
+                  <Button secondary disabled={!!activeRide} onPress={()=>D('home')}>تحديد موقع جديد</Button>
+                </View>
+                <View style={s.card}>
+                  <Text style={s.title}>مشاوير مؤجلة</Text>
+                  <Text style={s.caption}>تذكير محلي بمشوار محفوظ، وليس حجزاً مؤكداً أو إرسالاً تلقائياً للكباتن.</Text>
+                  {!scheduledRides.length&&<Text style={s.body}>لا توجد مشاوير مؤجلة</Text>}
+                  {scheduledRides.map(item=><View key={item.id} style={s.tripSummary}>
+                    <Text style={s.label}>{item.pickup} ← {item.destination}</Text>
+                    <Text style={s.caption}>{localDateLabel(item.when)} • {item.notificationId?'تذكير مضبوط':'دون تذكير'}</Text>
+                    <View style={s.row}>
+                      <Button disabled={!!activeRide||busy} onPress={()=>restoreSchedule(item)}>استعادة المشوار</Button>
+                      <Button secondary disabled={busy} onPress={()=>run(()=>removeSchedule(item))}>إزالة</Button>
+                    </View>
+                  </View>)}
+                  <Button secondary disabled={!!activeRide} onPress={()=>{D('home');setScheduleOpen(true);}}>إعداد مشوار لاحق</Button>
+                </View>
+                {!!savedRides.length&&<View style={s.card}>
+                  <Text style={s.title}>المشاوير المحفوظة</Text>
+                  {savedRides.map(ride=><Button key={ride.id} secondary disabled={!!activeRide||busy} onPress={()=>repeatRide(ride)}>{ride.pickup} ← {ride.destination}</Button>)}
+                </View>}
+              </>}
               <View style={s.card}>
-                <Text style={s.title}>خيارات الدفع</Text>
-                <View style={s.paymentRow}>
-                  <View style={s.paymentIcon}><Text style={s.paymentSymbol}>✓</Text></View>
-                  <View style={{flex:1,gap:3}}>
-                    <Text style={s.label}>نقداً</Text>
-                    <Text style={s.caption}>تسوية الأجرة مع الكابتن مباشرة</Text>
-                  </View>
-                  <Text style={s.badge}>متاح</Text>
-                </View>
-                <View style={s.paymentRow}>
-                  <View style={[s.paymentIcon,{backgroundColor:theme.warning}]}><Text style={s.paymentSymbol}>▣</Text></View>
-                  <View style={{flex:1,gap:3}}>
-                    <Text style={s.label}>ماي كاشي</Text>
-                    <Text style={s.caption}>بانتظار تفعيل الربط الرسمي</Text>
-                  </View>
-                  <Text style={s.pendingBadge}>قريباً</Text>
-                </View>
-                <Text style={s.caption}>لا توجد محفظة أموال أو مدفوعات إلكترونية مفعّلة حالياً.</Text>
-                <Button secondary onPress={()=>D('trips')}>عرض سجل الرحلات</Button>
+                <Text style={s.title}>السلامة والمساعدة</Text>
+                <Text style={s.caption}>احفظ رقم شخص تثق به للاتصال السريع عند الحاجة.</Text>
+                <Field label="جهة اتصال موثوقة" value={emergencyPhone} onChangeText={setEmergencyPhone} placeholder="+249XXXXXXXXX" keyboardType="phone-pad" maxLength={13}/>
+                <Button disabled={busy||!localReady} onPress={()=>run(saveEmergency)}>حفظ الرقم</Button>
+                <Button secondary disabled={!/^\+249\d{9}$/.test(emergencyPhone.trim())} onPress={()=>run(()=>Linking.openURL('tel:'+emergencyPhone.trim()))}>اتصال بجهة الاتصال</Button>
+                <Text style={s.caption}>الدفع نقداً مباشرة مع الكابتن. لا توجد مدفوعات إلكترونية داخل التطبيق.</Text>
               </View>
             </>}
 
@@ -1073,6 +1269,11 @@ function Main() {
                     </Button>
                   </>
                 )}
+                {activeRide.driver_id&&activeStates.includes(activeRide.status)&&
+                  <Button secondary onPress={()=>setChatOpen(v=>!v)}>{chatOpen?'إغلاق المحادثة':'محادثة الرحلة'}</Button>}
+                {chatOpen&&activeRide.driver_id&&activeStates.includes(activeRide.status)&&
+                  <RideChat key={activeRide.id} rideId={activeRide.id} userId={userId}/>}
+                {/^\+249\d{9}$/.test(emergencyPhone.trim())&&<Button secondary onPress={()=>run(()=>Linking.openURL('tel:'+emergencyPhone.trim()))}>اتصال بجهة موثوقة</Button>}
                 {profile.role==='passenger' && <Button secondary onPress={()=>run(()=>Share.share({
                   message:'رحلتي عبر أركب | '+activeRide.pickup+' إلى '+activeRide.destination+' | الحالة: '+states[activeRide.status]
                 }))}>مشاركة تفاصيل الرحلة</Button>}
@@ -1157,6 +1358,18 @@ function Main() {
                   value={pickupNote} onChangeText={setPickupNote} maxLength={240}/>
                 <Field label="اسم الوجهة"
                   value={dest} onChangeText={B}/>
+                <View style={s.tripSummary}>
+                  <Text style={s.label}>الأماكن المفضلة</Text>
+                  <Text style={s.caption}>اختر الانطلاق أو الوجهة أعلاه ثم احفظ الموقع أو استخدم مكاناً محفوظاً.</Text>
+                  <View style={s.row}>
+                    <Button secondary disabled={!localReady||busy} onPress={()=>run(()=>savePlace('home'))}>حفظ كالمنزل</Button>
+                    <Button secondary disabled={!localReady||busy} onPress={()=>run(()=>savePlace('work'))}>حفظ كالعمل</Button>
+                  </View>
+                  <View style={s.row}>
+                    {!!savedPlaces.home&&<Button secondary onPress={()=>usePlace('home')}>المنزل</Button>}
+                    {!!savedPlaces.work&&<Button secondary onPress={()=>usePlace('work')}>العمل</Button>}
+                  </View>
+                </View>
 
                 <Button secondary={!forSomeone} onPress={()=>setForSomeone(value=>!value)}>
                   {forSomeone?'الطلب لشخص آخر ✓':'اطلب لزول تاني'}
@@ -1203,6 +1416,16 @@ function Main() {
                 <Button disabled={busy} onPress={()=>act(requestRide)}>
                   اطلب مشوارك
                 </Button>
+                <Button secondary disabled={busy||!localReady} onPress={()=>setScheduleOpen(v=>!v)}>
+                  {scheduleOpen?'إغلاق الموعد':'احفظ مشواراً لوقت لاحق'}
+                </Button>
+                {scheduleOpen&&<View style={s.tripSummary}>
+                  <Text style={s.label}>موعد تذكير المشوار</Text>
+                  <Text style={s.caption}>وفق توقيت الهاتف؛ ستراجع المشوار وتؤكد طلبه بنفسك.</Text>
+                  <Field label="التاريخ والساعة (24 ساعة)" value={scheduleDate} onChangeText={setScheduleDate}
+                    placeholder="2026-12-01 08:30" maxLength={16}/>
+                  <Button disabled={busy} onPress={()=>run(saveSchedule)}>حفظ الموعد</Button>
+                </View>}
               </View>
             )}
 
@@ -1290,10 +1513,16 @@ function Main() {
             {(tab==='trips' || (tab==='home' && (profile.role==='driver' || activeRide?.status==='requested'))) && <>
             <Text style={s.title}>{tab==='home' && profile.role==='driver'?'الطلبات والرحلات':'رحلاتي'}</Text>
 
-            {!trips.length &&
-              <Text style={s.body}>لا توجد رحلات حالياً</Text>}
+            {tab==='trips'&&<View style={s.row}>
+              {[['all','الكل'],['active','النشطة'],['completed','المكتملة'],['cancelled','الملغاة']].map(([key,label])=>
+                <Button key={key} secondary={tripFilter!==key} onPress={()=>{setTripFilter(key);setFocusedRide(null);}}>{label}</Button>)}
+            </View>}
+            {!(tab==='trips'?orderedTrips.filter(t=>tripFilter==='all'||t.id===focusedRide||
+              (tripFilter==='active'?['requested',...activeStates].includes(t.status):t.status===tripFilter)):orderedTrips).length &&
+              <Text style={s.body}>لا توجد رحلات في هذه القائمة</Text>}
 
-            {orderedTrips.map(t=>(
+            {(tab==='trips'?orderedTrips.filter(t=>tripFilter==='all'||t.id===focusedRide||
+              (tripFilter==='active'?['requested',...activeStates].includes(t.status):t.status===tripFilter)):orderedTrips).map(t=>(
               <View key={t.id} style={s.card}>
                 <Text style={t.status==='cancelled'?s.pendingBadge:s.badge}>{states[t.status]||t.status}</Text>
 
@@ -1490,12 +1719,8 @@ const s=StyleSheet.create({
   radioDot:{width:10,height:10,borderRadius:5,backgroundColor:G},
   badge:{alignSelf:'flex-end',color:G,backgroundColor:theme.soft,paddingHorizontal:10,paddingVertical:6,borderRadius:12,fontSize:12,fontWeight:'700'},
   pendingBadge:{alignSelf:'flex-end',color:'#775717',backgroundColor:theme.warning,paddingHorizontal:10,paddingVertical:6,borderRadius:12,fontSize:12,fontWeight:'700'},
-  walletHero:{backgroundColor:theme.deep,borderRadius:theme.radius.lg,padding:theme.space.lg,gap:8},
-  walletEyebrow:{fontSize:14,fontWeight:'700',color:Y,textAlign:'right'},
-  walletTitle:{fontSize:28,fontWeight:'900',color:theme.surface,textAlign:'right'},
-  walletText:{fontSize:15,lineHeight:22,color:'#DDEBE4',textAlign:'right'},
-  paymentRow:{flexDirection:'row-reverse',alignItems:'center',gap:12,paddingVertical:12,borderBottomWidth:1,borderColor:theme.border},
-  paymentIcon:{width:44,height:44,borderRadius:12,backgroundColor:theme.soft,justifyContent:'center',alignItems:'center'},
-  paymentSymbol:{color:G,fontSize:22,fontWeight:'800'},
+  chatBubble:{maxWidth:'90%',padding:12,borderRadius:theme.radius.md,gap:3},
+  chatMine:{alignSelf:'flex-end',backgroundColor:theme.soft},
+  chatOther:{alignSelf:'flex-start',backgroundColor:theme.background,borderWidth:1,borderColor:theme.border},
   cargoPhoto:{width:'100%',height:160,borderRadius:theme.radius.sm,resizeMode:'contain'}
 });
