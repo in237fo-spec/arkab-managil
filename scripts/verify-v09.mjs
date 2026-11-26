@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import parser from '@babel/parser';
+import {validPoint,parseRoadRoute} from '../roadRoute.js';
+import {makeTrackingLink,validToken,validateTicket} from '../v09Logic.js';
+const load=file=>readFileSync(new URL('../'+file,import.meta.url),'utf8');
+for(const file of ['App.js','roadRoute.js','v09Logic.js','v09Services.js','rideFeatures.js','SplashIntro.js'])
+  parser.parse(load(file),{sourceType:'module',plugins:['jsx']});
+for(const file of ['supabase/functions/arkab-live-share/index.ts','supabase/functions/arkab-road-route/index.ts'])
+  parser.parse(load(file),{sourceType:'module',plugins:['typescript']});
+assert.equal(validPoint([32.98,14.25]),true);
+assert.equal(validPoint([180,91]),false);
+assert.equal(parseRoadRoute({code:'Ok',routes:[{distance:3100,duration:620,geometry:{coordinates:[[32.98,14.25],[33,14.26]]}}]}).distanceKm,3.1);
+assert.equal(parseRoadRoute({code:'NoRoute'}),null);
+assert.equal(parseRoadRoute({code:'Ok',routes:[{distance:3100,duration:0,geometry:{coordinates:[[32.98,14.25],[33,14.26]]}}]}),null);
+const token='a'.repeat(64);
+assert.equal(validToken(token),true);
+assert.equal(validToken('invalid'),false);
+assert.equal(makeTrackingLink('https://track.example/',token),'https://track.example/#'+token);
+assert.equal(makeTrackingLink('http://track.example/',token),null);
+assert.equal(makeTrackingLink('https://track.example/?x=1',token),null);
+assert.equal(makeTrackingLink('https://user:secret@track.example/',token),null);
+assert.equal(validateTicket('ride','خمس حروف'),true);
+assert.equal(validateTicket('unknown','This is a ticket'),false);
+assert.equal(validateTicket('technical','x'),false);
+assert.equal(validateTicket('other','x'.repeat(1501)),false);
+const app=JSON.parse(load('app.json')),pkg=JSON.parse(load('package.json')),lock=JSON.parse(load('package-lock.json'));
+assert.equal(app.expo.version,'0.9.0');assert.equal(pkg.version,app.expo.version);assert.equal(lock.packages[''].version,pkg.version);
+assert.deepEqual(app.expo.plugins.find(p=>Array.isArray(p)&&p[0]==='expo-build-properties')[1].android.buildArchs,['armeabi-v7a','arm64-v8a']);
+console.log('PASS: v0.9 source, route parsing, tracking-link sanity checks, support validation, APK architecture configuration and version.');

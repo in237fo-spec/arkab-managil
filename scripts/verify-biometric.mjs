@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import parser from '@babel/parser';
+import {freshGate,gateAfterLoad,privateViewAllowed,gateOnBackground} from '../biometricGateLogic.js';
+const owner='account-one',other='account-two';
+assert.equal(privateViewAllowed(owner,freshGate(),true),false,'never show an account while preference is being read');
+assert.equal(privateViewAllowed(owner,freshGate(owner),true),false);
+assert.equal(privateViewAllowed(undefined,freshGate(),true),true,'allow normal sign-in when there is no server session');
+const off=gateAfterLoad(owner,null,false);
+assert.equal(off.enabled,false);
+assert.equal(privateViewAllowed(owner,off,true),true,'feature is disabled by default');
+const on=gateAfterLoad(owner,'1',true);
+assert.equal(on.phase,'locked');
+assert.equal(privateViewAllowed(owner,on,true),false,'retained session with opt-in must be locked');
+const verified=gateAfterLoad(owner,'1',true,true);
+assert.equal(privateViewAllowed(owner,verified,true),true);
+assert.equal(privateViewAllowed(owner,verified,false),false,'hide private UI when backgrounded');
+assert.equal(privateViewAllowed(other,verified,true),false,'unlock is bound to account');
+assert.equal(gateOnBackground(verified,false).phase,'locked');
+assert.equal(gateOnBackground(verified,true).phase,'unlocked','OS prompt transitions do not cause a false relock');
+assert.equal(gateOnBackground(off,false).phase,'unlocked');
+const unknown=gateAfterLoad(owner,'unreadable',true);
+assert.equal(unknown.enabled,null);assert.equal(privateViewAllowed(owner,unknown,true),false,'read errors fail closed');
+for(const file of ['App.js','biometricGate.js','biometricGateLogic.js']){
+  parser.parse(readFileSync(new URL('../'+file,import.meta.url),'utf8'),{sourceType:'module',plugins:['jsx']});
+}
+const app=JSON.parse(readFileSync(new URL('../app.json',import.meta.url),'utf8'));
+const pkg=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
+assert.equal(pkg.dependencies['expo-local-authentication'],'17.0.9');
+assert.ok(app.expo.plugins.some(p=>p[0]==='expo-local-authentication'));
+console.log('PASS: biometric preference, account scoping, first-login fallback, background locking, and fail-closed privacy gate.');
