@@ -5,6 +5,17 @@ export function makeTrackingLink(base,token){
   try{const url=new URL(base);if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash)return null;url.hash=token;return url.toString();}
   catch{return null;}
 }
+// Missing identity or ride is never a valid match: undefined === undefined
+// must not cause a read from a missing local sharing record.
+export function activeShareRecord(record,userId,rideId,now=Date.now()){
+  if(!record||typeof record!=='object'||!userId||!rideId)return null;
+  if(record.userId!==userId||record.rideId!==rideId||!validToken(record.token))return null;
+  return Date.parse(record.expiresAt)>now?record:null;
+}
+export function activeShareLink(base,record,userId,rideId,now=Date.now()){
+  const active=activeShareRecord(record,userId,rideId,now);
+  return active?makeTrackingLink(base,active.token):null;
+}
 export const shareReady=()=>!!makeTrackingLink(trackingViewer,'a'.repeat(64));
 
 export const supportCategories={

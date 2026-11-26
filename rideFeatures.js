@@ -129,7 +129,7 @@ export function useRidePush(db, userId, onOpen) {
   const revoking = useRef(false);
 
   async function removeRecord(id,record) {
-    if(record?.userId!==id)return;
+    if(!id||!record||record.userId!==id)return;
     for(const value of record.tokens||[]) {
       const {error}=await db.rpc('set_push_device',{p_token:value,p_enabled:false});
       if(error)throw error;
@@ -161,7 +161,7 @@ export function useRidePush(db, userId, onOpen) {
         return false;
       }
       // Persist before network enrollment so any subsequent logout can revoke the token.
-      const known=previous?.userId===id?previous.tokens||[]:[];
+      const known=previous&&previous.userId===id?previous.tokens||[]:[];
       await SecureStore.setItemAsync(PUSH_RECORD,JSON.stringify({userId:id,tokens:[...new Set([...known,value])]}));
       if(identity.current!==id||revoking.current)return false;
       const {error}=await db.rpc('set_push_device',{p_token:value,p_enabled:true});

@@ -22,7 +22,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import {useFonts} from 'expo-font';
 import {useRoadRoute} from './roadRoute';
 import {useBiometricGate} from './biometricGate';
-import {registerPassengerShareTask,beginPassengerShare,endPassengerShare,stopNativeShare,reconcilePassengerShare,usePassengerShare,shareReady,makeTrackingLink,trackingViewer,useEarnings,useSupportTickets,supportCategories,supportStatuses,validateTicket} from './v09Services';
+import {registerPassengerShareTask,beginPassengerShare,endPassengerShare,stopNativeShare,reconcilePassengerShare,usePassengerShare,shareReady,makeTrackingLink,activeShareLink,trackingViewer,useEarnings,useSupportTickets,supportCategories,supportStatuses,validateTicket} from './v09Services';
 const Cairo_400Regular=require('@expo-google-fonts/cairo/400Regular/Cairo_400Regular.ttf');
 const Cairo_700Bold=require('@expo-google-fonts/cairo/700Bold/Cairo_700Bold.ttf');
 
@@ -521,7 +521,7 @@ function Main() {
   const passengerShare=usePassengerShare(profile?.role==='passenger'?userId:null,activeRide?.id);
   const [supportRide,setSupportRide]=useState(null);
   function openSupport(rideId=null){setSupportRide(rideId);D('support');}
-  const shareLink=passengerShare.record?.userId===userId&&passengerShare.record?.rideId===activeRide?.id?makeTrackingLink(trackingViewer,passengerShare.record.token):null;
+  const shareLink=activeShareLink(trackingViewer,passengerShare.record,userId,activeRide?.id);
   async function sendShareLink(link){if(!link)throw Error('لا يوجد رابط تتبع متاح');await Share.share({message:'تابع موقعي خلال رحلتي في أركب. الرابط خاص ومؤقت: '+link});}
   async function startLiveShare(){
     if(profile?.role!=='passenger'||!activeRide?.driver_id||!activeStates.includes(activeRide.status))throw Error('المشاركة متاحة بعد قبول الرحلة');

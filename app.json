@@ -8,12 +8,12 @@
         "projectId": "653d655f-1c9e-4b85-b8b6-ccc819b2943b"
       }
     },
-    "version": "0.9.0",
+    "version": "0.9.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.arkab.managil",
-      "versionCode": 14,
+      "versionCode": 15,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",

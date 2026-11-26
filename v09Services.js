@@ -6,8 +6,8 @@ import * as TaskManager from 'expo-task-manager';
 
 const SHARE_TASK='arkab-passenger-live-share-v09';
 const SHARE_KEY='arkab.v09.passenger-live-share';
-import {validToken,trackingViewer,makeTrackingLink,shareReady} from './v09Logic';
-export {trackingViewer,makeTrackingLink,shareReady,supportCategories,supportStatuses,validateTicket} from './v09Logic';
+import {validToken,trackingViewer,makeTrackingLink,shareReady,activeShareRecord} from './v09Logic';
+export {trackingViewer,makeTrackingLink,activeShareLink,shareReady,supportCategories,supportStatuses,validateTicket} from './v09Logic';
 
 async function localShare(){
   try{const text=await SecureStore.getItemAsync(SHARE_KEY);return text?JSON.parse(text):null;}catch{return null;}
@@ -65,11 +65,11 @@ export async function beginPassengerShare(db,userId,rideId){
 }
 export async function reconcilePassengerShare(userId,confirmedActiveRideId){
   const record=await localShare();
-  if(record?.userId===userId&&record.rideId!==confirmedActiveRideId)await stopNativeShare();
+  if(record&&userId&&record.userId===userId&&record.rideId!==confirmedActiveRideId)await stopNativeShare();
 }
 export async function endPassengerShare(db,userId,rideId){
   const record=await localShare();
-  if(record?.userId===userId)await stopNativeShare();
+  if(record&&userId&&record.userId===userId)await stopNativeShare();
   if(rideId){
     const {error}=await db.rpc('arkab_share_revoke_v09',{p_ride:rideId});
     if(error)throw Error('توقف نشر موقعك على الجهاز. تعذر تأكيد إلغاء الرابط في الخادم؛ أعد المحاولة عند عودة الشبكة.');
@@ -80,14 +80,14 @@ export function usePassengerShare(userId,rideId){
   const refresh=useCallback(async()=>{
     const saved=await localShare();
     const running=await Location.hasStartedLocationUpdatesAsync(SHARE_TASK).catch(()=>false);
-    const current=saved?.userId===userId&&saved?.rideId===rideId&&Date.parse(saved.expiresAt)>Date.now()&&running;
-    setRecord(current?saved:null);
+    const current=running?activeShareRecord(saved,userId,rideId):null;
+    setRecord(current);
   },[userId,rideId]);
   useEffect(()=>{
     let active=true;setRecord(null);
     if(!userId||!rideId)return;
     const load=async()=>{const saved=await localShare();const running=await Location.hasStartedLocationUpdatesAsync(SHARE_TASK).catch(()=>false);
-      if(active)setRecord(saved?.userId===userId&&saved?.rideId===rideId&&Date.parse(saved.expiresAt)>Date.now()&&running?saved:null);};
+      if(active)setRecord(running?activeShareRecord(saved,userId,rideId):null);};
     void load();const t=setInterval(load,15000);
     const listener=AppState.addEventListener('change',state=>{if(state==='active')void load();});
     return()=>{active=false;clearInterval(t);listener.remove();};
