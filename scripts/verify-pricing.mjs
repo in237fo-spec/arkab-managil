@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import {transformSync} from '@babel/core';
+import {parseFare,estimateFare} from '../pricingLogic.js';
+assert.equal(parseFare('١٢٥٠٫٥٠'),1250.5);
+assert.equal(parseFare('۱۲۵۰'),1250);
+assert.equal(parseFare('0'),null);
+assert.equal(parseFare('0',true),0);
+for(const bad of ['','-1','1e5','1,500','1.001','Infinity','1000000001',null])assert.equal(parseFare(bad),null);
+const rows=[{vehicle_kind:'rickshaw',base_fare:500,per_km:150,active:true},{vehicle_kind:'cargo_tuktuk',base_fare:'800',per_km:'250',active:true}];
+assert.equal(estimateFare(rows,'rickshaw',2.5),875);
+assert.equal(estimateFare(rows,'cargo_tuktuk',2.5),1425);
+assert.equal(estimateFare([], 'rickshaw',2),null);
+assert.equal(estimateFare([{...rows[0],active:false}],'rickshaw',2),null);
+assert.equal(estimateFare(rows,'rickshaw',-2),null);
+assert.equal(estimateFare([{...rows[0],base_fare:null}],'rickshaw',2),null);
+// Test the actual admin handler against mocked responses only. No real
+// credentials, accounts, requests, or fare changes are used.
+const filename='supabase/functions/arkab-admin/index.ts';
+const {code}=transformSync(fs.readFileSync(new URL('../'+filename,import.meta.url),'utf8'),{filename,configFile:false,babelrc:false,plugins:['@babel/plugin-transform-typescript']});
+let handler,dbRequests=[];
+const rideId='00000000-0000-4000-8000-000000000001';
+const response=value=>new Response(JSON.stringify(value),{status:200});
+const sandbox={Deno:{env:{get:()=> 'https://fake.example'},serve:fn=>{handler=fn;}},Response,Request,fetch:async(url,opts)=>{
+  if(url.includes('/auth/v1/user'))return response({email_confirmed_at:'2026-01-01',app_metadata:{arkab_admin:true}});
+  dbRequests.push({url,method:opts.method,body:opts.body});
+  if(url.includes('/rest/v1/rides?'))return response([{id:rideId,agreed_fare:1000,vehicle_kind:'rickshaw',completed_at:'2026-01-01'}]);
+  if(opts.method==='GET')return response([]);
+  return response([JSON.parse(opts.body)]);
+}};
+vm.runInNewContext(code,sandbox);
+const call=body=>handler(new Request('https://fake.example/functions/v1/arkab-admin',{method:'POST',headers:{Authorization:'Bearer mock-test-session','Content-Type':'application/json',Origin:'https://admin.almanagil.com'},body:JSON.stringify(body)}));
+let res=await call({action:'pricing_list'});assert.equal(res.status,200);assert.deepEqual(await res.json(),{rows:[]});
+res=await call({action:'pricing_save',vehicle_kind:'rickshaw',base_fare:500,per_km:150,active:true});assert.equal(res.status,200);
+res=await call({action:'pricing_save',vehicle_kind:'rickshaw',base_fare:0,per_km:0,active:true});assert.equal(res.status,400);
+res=await call({action:'commission_list'});assert.equal(res.status,200);assert.equal((await res.json()).rides.length,1);
+res=await call({action:'commission_save',ride_id:rideId,amount:100});assert.equal(res.status,200);
+res=await call({action:'commission_save',ride_id:rideId,amount:1100});assert.equal(res.status,400);
+assert.equal(dbRequests.filter(r=>r.method==='POST'&&r.url.includes('/commissions?')).length,1);
+console.log('PASS: SDG validation, Arabic digits, estimates, admin pricing & completed-ride commission checks (mocked).');

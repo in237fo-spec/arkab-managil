@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.arkab-road-route]
 verify_jwt = false
+
+[functions.arkab-admin]
+verify_jwt = true

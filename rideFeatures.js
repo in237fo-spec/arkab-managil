@@ -7,12 +7,7 @@ import appConfig from './app.json';
 
 export const coordinate = (lng,lat) => lng == null || lat == null ? null : [lng,lat];
 
-export function estimateFare(pricing, kind, distance) {
-  const rate = pricing.find(row => row.vehicle_kind === kind);
-  if (!rate || distance == null) return null;
-  const result = Number(rate.base_fare) + distance * Number(rate.per_km);
-  return Number.isFinite(result) && result > 0 ? Math.ceil(result) : null;
-}
+export {estimateFare} from './pricingLogic';
 
 export function useNearbyVehicles(db, userId, pickup) {
   const [result,setResult] = useState({rows:[],status:'idle',updatedAt:null});

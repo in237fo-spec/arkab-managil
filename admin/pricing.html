@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://hfhkscqmsmxsxzjfxzew.supabase.co; base-uri 'none'; form-action 'none'">
+<title>أركب | التسعير والعمولات</title><link rel="stylesheet" href="services-v09.css"></head>
+<body><header><div class="wrap"><span class="brand">ARKAB | أركب</span><span class="sub">إدارة التسعير والعمولات • المناقل</span></div></header>
+<main class="wrap">
+<p id="notice" class="status" role="status" hidden></p>
+<section class="panel" id="login"><h1>دخول إدارة أركب</h1><p class="dim">يلزم حساب إداري معتمد مسبقاً. لا تمنح حسابات الراكب والكابتن صلاحية تعديل الأسعار.</p>
+<form id="signin"><label for="email">البريد الإلكتروني</label><input id="email" type="email" autocomplete="username" required><label for="password">كلمة المرور</label><input id="password" type="password" autocomplete="current-password" required><button>دخول الإدارة</button></form></section>
+<div id="dashboard" hidden>
+<section class="panel"><h1>تسعيرة المركبات</h1><p class="dim">القيمة بالجنيه السوداني. التقدير = أجرة الانطلاق + المسافة بالكيلومتر × سعر الكيلومتر. الأجرة النهائية بالتفاوض.</p><div id="rates"></div></section>
+<section class="panel"><h1>عمولات الرحلات المكتملة</h1><p class="dim">أحدث 100 رحلة مكتملة. يمكن حساب العمولة كنسبة أو تسجيل مبلغ محدد. لا يتسبب الحفظ في خصم إلكتروني أو تحويل مالي. لا يعدّل النظام أجرة الرحلة.</p><div id="commissions"></div></section>
+<button id="refresh" class="secondary">تحديث البيانات</button><button id="logout" class="secondary">تسجيل الخروج</button>
+</div><a href="./">العودة إلى الإدارة</a></main>
+<script src="public-config-v09.js" defer></script><script src="pricing-admin.js" defer></script>
+</body></html>

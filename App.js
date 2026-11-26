@@ -22,6 +22,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import {useFonts} from 'expo-font';
 import {useRoadRoute} from './roadRoute';
 import {createRefreshQueue} from './refreshQueue';
+import {parseFare} from './pricingLogic';
 import {useBiometricGate} from './biometricGate';
 import {registerPassengerShareTask,beginPassengerShare,endPassengerShare,stopNativeShare,reconcilePassengerShare,usePassengerShare,shareReady,makeTrackingLink,activeShareLink,trackingViewer,useEarnings,useSupportTickets,supportCategories,supportStatuses,validateTicket} from './v09Services';
 const Cairo_400Regular=require('@expo-google-fonts/cairo/400Regular/Cairo_400Regular.ttf');
@@ -469,6 +470,7 @@ function Main() {
   const [openedPhoto,setOpenedPhoto] = useState(null);
   const submittedDraft = useRef(null);
   const [pricing,setPricing] = useState([]);
+  const [pricingStatus,setPricingStatus] = useState('loading');
   const [savedRides,setSavedRides] = useState([]);
   const [notifications,setNotifications] = useState([]);
   const [focusedRide,setFocusedRide] = useState(null);
@@ -524,7 +526,7 @@ function Main() {
     activeRide ? coordinate(activeRide.pickup_lng,activeRide.pickup_lat):null,
     activeRide ? coordinate(activeRide.destination_lng,activeRide.destination_lat):null,db);
   const km = route.status==='ready'?route.distanceKm:distanceKm(pickupPoint,destPoint);
-  const estimate = estimateFare(pricing,vehicle,pickupPoint && destPoint ? km : null);
+  const estimate = pricingStatus==='ready'?estimateFare(pricing,vehicle,pickupPoint && destPoint ? km : null):null;
   const userId = session?.user.id;
   const biometric=useBiometricGate(userId,async(password,expectedId)=>{
     // A retained server session is required; the alternative is password
@@ -776,7 +778,10 @@ function Main() {
       ]);
       if (!current()) return;
       if (!inboxResult.error) setNotifications(inboxResult.data || []);
-      if (pricingResult && !pricingResult.error) setPricing(pricingResult.data || []);
+      if(pricingResult){
+        if(pricingResult.error){setPricing([]);setPricingStatus('error');}
+        else{setPricing(pricingResult.data || []);setPricingStatus('ready');}
+      }
       if (savedResult && !savedResult.error) setSavedRides((savedResult.data || []).map(row=>row.rides).filter(Boolean));
       setSyncStatus('ready');setLastSync(Date.now());
 
@@ -836,7 +841,7 @@ function Main() {
         SV([]);
         setNotifications([]);
         setSavedRides([]);
-        setPricing([]);
+        setPricing([]);setPricingStatus('loading');
         setNearbyAnchor(null);
         setFocusedRide(null);
         setOpenedPhoto(null);
@@ -1189,7 +1194,7 @@ function Main() {
     if (!pickupPoint || !destPoint) throw Error('حدد نقطتي الرحلة على الخريطة');
     if(distanceKm(pickupPoint,destPoint)<0.03)throw Error('اختر وجهة مختلفة عن نقطة الانطلاق');
     if (!pickup.trim() || !dest.trim()) throw Error('أدخل أسماء المواقع');
-    const fare = price.trim() ? Number(price) : estimate;
+    const fare = price.trim() ? parseFare(price) : estimate;
     if (!Number.isFinite(fare) || fare<=0) throw Error('أدخل سعراً صحيحاً');
     const contact = forSomeone ? recipientPhone.trim() : null;
     if (forSomeone && !/^\+249\d{9}$/.test(contact)) throw Error('أدخل رقم التواصل بصيغة +249XXXXXXXXX');
@@ -1714,9 +1719,9 @@ function Main() {
                   </View>
                 )}
 
-                {estimate!==null && <Text style={s.fare}>الأجرة التقديرية: {estimate} ج.س</Text>}
+                {estimate!==null && <View style={s.tripSummary}><Text style={s.fare}>الأجرة التقديرية: {money(estimate)}</Text><Text style={s.caption}>{route.status==='ready'?'حسب المسافة عبر الطريق':'حسب المسافة التقريبية؛ قد تختلف الأجرة حسب الطريق'}</Text><Button secondary onPress={()=>Q(String(estimate))}>استخدم الأجرة التقديرية</Button></View>}
                 {estimate===null && pickupPoint && destPoint &&
-                  <Text style={s.body}>التقدير التلقائي غير متاح لهذه المركبة. أدخل أجرة مقترحة.</Text>}
+                  <Text style={s.body}>{pricingStatus==='loading'?'جاري تحميل تسعيرة المركبة… يمكنك إدخال أجرة مقترحة.':pricingStatus==='error'?'تعذر تحديث التسعيرة؛ أدخل أجرة مقترحة أو حدّث الاتصال.':'لم تعتمد الإدارة تسعيرة تلقائية لهذه المركبة بعد. أدخل أجرة مقترحة.'}</Text>}
                 <Field label="الأجرة المقترحة بالجنيه" value={price} onChangeText={Q}
                   placeholder={estimate===null?undefined:String(estimate)} keyboardType="numeric"/>
 
@@ -1867,7 +1872,7 @@ function Main() {
                   {profile.role==='driver' && driver?.approved && t.status==='requested' && <>
                     <Field label="عرضك بالجنيه" value={bid[t.id]||''} onChangeText={v=>J(prev=>({...prev,[t.id]:v}))} keyboardType="numeric"/>
                     <Button disabled={busy} onPress={()=>act(async()=>{
-                      const fare=Number(bid[t.id]||t.proposed_fare);
+                      const fare=parseFare(bid[t.id]?.trim()?bid[t.id]:t.proposed_fare);
                       if(!Number.isFinite(fare)||fare<=0)throw Error('السعر غير صحيح');
                       await rpc('submit_offer',{p_ride:t.id,p_fare:fare});
                     })}>إرسال العرض</Button>
@@ -1939,6 +1944,7 @@ function EarningsPanel({summary,period,onPeriod,onBack}){
     {summary.status==='loading'&&<ActivityIndicator color={G}/>}
     {data&&<><View style={s.earningsHero}><Text style={[s.caption,{color:'#E6F1E9'}]}>إجمالي الأجرة المتفق عليها</Text><Text style={s.earningsTotal}>{money(data.gross)}</Text><Text style={{color:'#E6F1E9',textAlign:'right'}}>{data.ride_count} رحلة مكتملة</Text></View>
       <View style={s.row}><View style={s.metric}><Text style={s.caption}>متوسط الأجرة</Text><Text style={s.label}>{data.ride_count-data.missing_fare_count>0?money(Number(data.gross)/(data.ride_count-data.missing_fare_count)):'—'}</Text></View><View style={s.metric}><Text style={s.caption}>عمولات مسجلة</Text><Text style={s.label}>{money(data.commission_recorded)}</Text></View></View>
+      {data.ride_count>0&&Number(data.missing_fare_count)===0&&Number(data.missing_commission_count)===0&&<View style={s.tripSummary}><Text style={s.label}>صافي الأرباح المحسوب بعد العمولات</Text><Text style={s.fare}>{money(Number(data.gross)-Number(data.commission_recorded))}</Text><Text style={s.caption}>مبالغ حسابية وليست إثباتاً للتحصيل أو التحويل.</Text></View>}
       {data.missing_fare_count>0&&<Text style={s.caption}>عدد رحلات بدون قيمة أجرة موثقة: {data.missing_fare_count}</Text>}
       {data.missing_commission_count>0&&<Text style={s.caption}>العمولة غير موثقة في {data.missing_commission_count} رحلة؛ لا يتم تقدير صافي الأرباح منها.</Text>}
       {data.legacy_count>0&&<View style={s.tripSummary}><Text style={s.label}>رحلات سابقة بلا تاريخ إكمال</Text><Text style={s.body}>{data.legacy_count} رحلة • {money(data.legacy_gross)}</Text><Text style={s.caption}>غير مدرجة في فترات اليوم والأسبوع والشهر.</Text></View>}
