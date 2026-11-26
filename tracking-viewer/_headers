@@ -1,0 +1,7 @@
+/*
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Permissions-Policy: geolocation=(), camera=(), microphone=()
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://hfhkscqmsmxsxzjfxzew.supabase.co; frame-src https://www.openstreetmap.org; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Cache-Control: no-store
