@@ -1,11 +1,54 @@
-# اركب – ARKAB | المناقل — 0.2.0
-نسخة مصدر اختبارية مرتبطة بإعدادات Supabase الفعلية (المفتاح عام publishable، وليس مفتاحاً سرياً). تمت مطابقة profiles/drivers/vehicles/rides/ride_offers وRPCs مع المشروع الحالي. لا تعِد تطبيق مخطط SQL القديم.
+# أركب ARKAB | المناقل
 
-## التشغيل والبناء
-- Node 22: npm install ثم npx expo install --fix ثم npx expo-doctor ثم npx expo start.
-- تفعيل Phone Auth ومزود SMS يدعم السودان في Supabase، واعتماد السائق ومركبته من لوحة الإدارة الرسمية قبل اختبار العروض.
-- npx eas-cli login ثم npx eas-cli init ثم npx eas-cli build --platform android --profile preview. يلزم مشروع Expo مرتبط وحساب مصادق عليه.
-- ملف eas.json يحدد APK للمعاينة وAAB للإنتاج.
+تطبيق Android واحد بواجهتين حسب نوع الحساب:
+- **الراكب:** إنشاء طلب، مشاهدة المركبات القريبة، استقبال عروض الكباتن، متابعة الرحلة، التقييم والدعم.
+- **الكابتن:** التسجيل وإضافة المركبة، انتظار الاعتماد الإداري، تشغيل/إيقاف التوفر، استقبال الطلبات وإرسال العروض وتحديث مراحل الرحلة.
 
-## حدود النسخة
-تم فحص صياغة JSX فقط؛ لم يتم تثبيت التبعيات أو اختبار الهاتف أو إنشاء APK. لم تنفذ الخرائط وGPS وPIN والتسعير حسب المسافة والمدفوعات والعمولات ولوحة الإدارة الفعلية وخط Cairo بعد. تحديث الطلبات يعتمد على Realtime مع استطلاع دوري. الاعتماد إداري يدوياً.
+## التقنية الحالية
+- Expo SDK 54 / React Native 0.81.
+- Supabase Auth + PostgreSQL + Realtime + Edge Functions.
+- MapLibre للخرائط.
+- Expo Location وTaskManager لتحديث الموقع في الخلفية وفق الأذونات.
+- Expo Notifications لإشعارات الرحلات.
+- Cairo للواجهات العربية، مع بصمة اختيارية عبر Android Biometric.
+
+## بيئة المشروع
+- Expo owner: `omer123mnm`
+- Expo project ID: `653d655f-1c9e-4b85-b8b6-ccc819b2943b`
+- Android application ID: `com.arkab.managil`
+- Supabase project ref: `hfhkscqmsmxsxzjfxzew`
+- فرع العمل الحالي: `feat/arkab-premium-ui`
+
+## المصادقة والحسابات
+التسجيل الحالي بالبريد الإلكتروني وكلمة المرور مع رمز تأكيد البريد. رقم الهاتف يُحفظ كوسيلة تواصل بصيغة السودان (+249)، لكنه **ليس موثقاً عبر SMS** في التدفق الحالي. اختيار دور الراكب أو الكابتن يتم عند إكمال الملف الشخصي، واعتماد الكابتن والمركبة إداري قبل استقبال الرحلات.
+
+## التتبع والإشعارات
+- تتبع الكابتن أثناء الرحلة يعتمد على إذن الموقع في الخلفية وخدمة foreground على Android.
+- ظهور المركبة للكباتن المتاحين يعتمد على تفعيل حالة التوفر ومشاركة الموقع.
+- إشعارات الرحلات تمر عبر trigger في قاعدة البيانات ثم Edge Function ثم Expo Push.
+- يلزم إعداد بيانات FCM V1 لمشروع Expo واختبار الإشعارات على هاتف Android حقيقي قبل النشر.
+
+## إعداد المشروع محلياً
+يتطلب Node.js وAndroid SDK/JDK عند البناء المحلي.
+
+```bash
+npm ci
+npx expo-doctor
+```
+
+للتطوير على جهاز Android مع الوحدات الأصلية مثل MapLibre استخدم Development Build أو البناء الأصلي، ولا تعتمد على Expo Go وحده.
+
+## ملفات البناء
+- `preview`: APK داخلي للتثبيت والاختبار على الهاتف.
+- `production`: Android App Bundle (AAB) مخصص للرفع إلى Google Play.
+- `app.json` يثبت compileSdkVersion وtargetSdkVersion على API 36.
+
+```bash
+eas build --platform android --profile preview
+eas build --platform android --profile production
+```
+
+## ملاحظات قبل الإصدار العام
+لا تعتبر هذه النسخة منشورة أو معتمدة للإنتاج قبل إغلاق قائمة التحقق في [PRODUCTION_READINESS.md](./PRODUCTION_READINESS.md)، بما فيها اختبار هاتفين، إعداد FCM V1، التحقق من خدمة التوجيه، مراجعة أمان Supabase، وسياسة الخصوصية ومتطلبات Google Play.
+
+لا تضع مفاتيح الخدمة السرية أو ملفات حسابات Google/Firebase داخل Git. استخدم أسرار الخدمات المعتمدة فقط.
