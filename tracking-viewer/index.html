@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://hfhkscqmsmxsxzjfxzew.supabase.co; frame-src https://www.openstreetmap.org; img-src 'self'; base-uri 'none'; form-action 'none'">
+<title>اركب | التتبع المباشر</title><link rel="stylesheet" href="services-v09.css"></head>
+<body><header><div class="wrap"><span class="brand">ARKAB | اركب</span><span class="sub">المناقل • مشاركة آمنة ومؤقتة</span></div></header>
+<main class="wrap"><section class="panel"><div class="eyebrow">تتبع الرحلة</div><h1>موقع الراكب المباشر</h1>
+<p id="status" class="status" role="status">جارٍ التحقق من الرابط…</p><p id="details" class="dim"></p>
+<div class="metrics"><div><small>آخر تحديث</small><strong id="updated">—</strong></div><div><small>صلاحية الرابط</small><strong id="expires">—</strong></div></div>
+<p id="coords" class="dim" hidden></p>
+<button id="enable-map" hidden>عرض الموقع على الخريطة</button>
+<p id="map-notice" class="dim" hidden>قد يتم إرسال إحداثيات العرض إلى مزود خريطة OpenStreetMap عند تفعيل الخريطة.</p>
+<iframe id="map" title="خريطة موقع الراكب" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin" hidden></iframe>
+<a id="map-link" target="_blank" rel="noopener noreferrer" hidden>فتح الموقع في OpenStreetMap</a>
+<button id="retry" class="secondary">تحديث التتبع</button></section>
+<section class="panel"><h2>خصوصية المشاركة</h2><p class="dim">هذه الصفحة تعرض آخر موقع وافق الراكب على مشاركته أثناء الرحلة فقط. لا تعرض اسمه أو رقم هاتفه أو بيانات الكابتن. يتوقف الرابط بعد ساعتين أو عند انتهاء الرحلة أو إلغاء المشاركة.</p></section></main>
+<footer class="wrap">أركب • شارك الرابط مع الأشخاص الموثوقين فقط</footer><script src="track-v09.js" defer></script></body></html>
