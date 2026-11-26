@@ -21,6 +21,8 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import {useFonts} from 'expo-font';
 import {useRoadRoute} from './roadRoute';
+import {useBiometricGate} from './biometricGate';
+import {registerPassengerShareTask,beginPassengerShare,endPassengerShare,stopNativeShare,reconcilePassengerShare,usePassengerShare,shareReady,makeTrackingLink,trackingViewer,useEarnings,useSupportTickets,supportCategories,supportStatuses,validateTicket} from './v09Services';
 const Cairo_400Regular=require('@expo-google-fonts/cairo/400Regular/Cairo_400Regular.ttf');
 const Cairo_700Bold=require('@expo-google-fonts/cairo/700Bold/Cairo_700Bold.ttf');
 
@@ -64,6 +66,8 @@ const db = createClient(
     }
   }
 );
+
+registerPassengerShareTask(db);
 
 const DRIVER_LOCATION_TASK = 'arkab-driver-background-location-v1';
 const ACTIVE_RIDE_KEY = 'arkab.background.activeRideId';
@@ -338,7 +342,7 @@ function RideMap({
   const [mapError,setMapError]=useState(false);
   const [reload,setReload]=useState(0);
   const [ready,setReady]=useState(false);
-  const points=[pickup,destination,driver].filter(Boolean);
+  const points=[pickup,destination,driver,...(route?.coordinates||[])].filter(Boolean);
   const fit=()=>{
     if(points.length>1){
       const lng=points.map(p=>p[0]),lat=points.map(p=>p[1]);
@@ -346,7 +350,7 @@ function RideMap({
         {padding:{top:48,right:48,bottom:48,left:48},duration:400});
     }else camera.current?.easeTo({center,zoom:14,duration:400});
   };
-  useEffect(()=>{if(ready&&pickup&&destination)fit();},[ready,pickup?.[0],pickup?.[1],destination?.[0],destination?.[1]]);
+  useEffect(()=>{if(ready&&pickup&&destination)fit();},[ready,pickup?.[0],pickup?.[1],destination?.[0],destination?.[1],route?.coordinates]);
   const line=route?.coordinates?.length>1 ? route.coordinates : null;
 
   return (
@@ -394,7 +398,7 @@ function RideMap({
       {mapError&&<View style={s.mapError}><Text style={s.caption}>تعذر تحميل الخريطة. تحقق من الإنترنت.</Text>
         <Button secondary onPress={()=>{setReady(false);setMapError(false);setReload(v=>v+1);}}>إعادة المحاولة</Button></View>}
       <Text style={s.attribution}>
-        © OpenStreetMap contributors • OpenFreeMap
+        © OpenStreetMap contributors • OpenFreeMap{route?' • OSRM':''}
       </Text>
     </View>
   );
@@ -497,13 +501,38 @@ function Main() {
   const sharingRef = useRef(false);
   const lastSent = useRef(0);
 
-  const route=useRoadRoute(pickupPoint,destPoint);
+  const route=useRoadRoute(pickupPoint,destPoint,db);
   const activeRoute=useRoadRoute(
     activeRide ? coordinate(activeRide.pickup_lng,activeRide.pickup_lat):null,
-    activeRide ? coordinate(activeRide.destination_lng,activeRide.destination_lat):null);
+    activeRide ? coordinate(activeRide.destination_lng,activeRide.destination_lat):null,db);
   const km = route.status==='ready'?route.distanceKm:distanceKm(pickupPoint,destPoint);
   const estimate = estimateFare(pricing,vehicle,pickupPoint && destPoint ? km : null);
   const userId = session?.user.id;
+  const biometric=useBiometricGate(userId,async(password,expectedId)=>{
+    // A retained server session is required; the alternative is password
+    // authentication to the same account, not a device credential bypass.
+    const address=session?.user?.email;
+    if(!address||session.user.id!==expectedId)return false;
+    const {data,error}=await db.auth.signInWithPassword({email:address,password});
+    return !error&&!!data?.session&&data.session.user.id===expectedId;
+  });
+  const [earningsPeriod,setEarningsPeriod]=useState('day');
+  const earnings=useEarnings(db,userId,earningsPeriod,profile?.role==='driver'&&tab==='earnings',lastSync);
+  const passengerShare=usePassengerShare(profile?.role==='passenger'?userId:null,activeRide?.id);
+  const [supportRide,setSupportRide]=useState(null);
+  function openSupport(rideId=null){setSupportRide(rideId);D('support');}
+  const shareLink=passengerShare.record?.userId===userId&&passengerShare.record?.rideId===activeRide?.id?makeTrackingLink(trackingViewer,passengerShare.record.token):null;
+  async function sendShareLink(link){if(!link)throw Error('لا يوجد رابط تتبع متاح');await Share.share({message:'تابع موقعي خلال رحلتي في أركب. الرابط خاص ومؤقت: '+link});}
+  async function startLiveShare(){
+    if(profile?.role!=='passenger'||!activeRide?.driver_id||!activeStates.includes(activeRide.status))throw Error('المشاركة متاحة بعد قبول الرحلة');
+    const currentRide=activeRide.id;
+    await new Promise((resolve,reject)=>Alert.alert('مشاركة التتبع المباشر',
+      'ستشارك موقع هاتفك أنت فقط مع من ترسل إليه الرابط. لا تظهر بيانات الكابتن أو رقم هاتفه. ينتهي الرابط تلقائياً عند نهاية الرحلة أو بعد ساعتين، ويمكن إيقافه في أي وقت.',
+      [{text:'إلغاء',style:'cancel',onPress:()=>reject(Error('لم يتم تفعيل المشاركة'))},{text:'مشاركة',onPress:resolve}],{cancelable:false}));
+    const created=await beginPassengerShare(db,userId,currentRide);
+    passengerShare.setRecord(created);
+    await sendShareLink(makeTrackingLink(trackingViewer,created.token));
+  }
   const localKey = (name)=>'arkab.v07.'+userId+'.'+name;
   useEffect(()=>{
     let alive=true;
@@ -532,9 +561,10 @@ function Main() {
     ? [...trips.filter(ride=>ride.id===focusedRide),...trips.filter(ride=>ride.id!==focusedRide)]
     : trips;
 
-  function openRide(rideId) {
+  function openRide(rideId,title) {
     setFocusedRide(rideId);
-    D('trips');
+    D(profile?.role==='driver'&&title==='طلب مشوار قريب'?'home':'trips');
+    void refresh();
   }
   useEffect(()=>{ if(profile?.contact_phone) SDriverPhone(profile.contact_phone); },[profile?.id]);
 
@@ -589,11 +619,12 @@ function Main() {
       if (!/^\d{6,8}$/.test(otp.trim()))
         throw Error('أدخل رمز التحقق كاملاً');
 
-      check(await db.auth.verifyOtp({
+      const verified=check(await db.auth.verifyOtp({
         email:address,
         token:otp.trim(),
         type:'email'
       }));
+      if(verified?.session)biometric.markAccountVerified(verified.session.user.id);
 
       O('');
       SW('');
@@ -608,15 +639,17 @@ function Main() {
         email:address,password
       }));
 
+      if(data.session)biometric.markAccountVerified(data.session.user.id);
       if (!data.session) {
         O('');
         SM('verify');
         SN('تم طلب إرسال رمز التأكيد');
       }
     } else {
-      check(await db.auth.signInWithPassword({
+      const signedIn=check(await db.auth.signInWithPassword({
         email:address,password
       }));
+      if(signedIn?.session)biometric.markAccountVerified(signedIn.session.user.id);
 
       SW('');
     }
@@ -651,6 +684,7 @@ function Main() {
       if (!current()) return;
       const own=active ? [active,...history.filter(r=>r.id!==active.id)] : history;
       AR(active || null);
+      if(p.role==='passenger')void reconcilePassengerShare(id,active?.id||null);
 
       let available=[];
 
@@ -748,6 +782,7 @@ function Main() {
 
       if(!v){
         refreshSequence.current++;
+        void stopNativeShare();setSupportRide(null);
         stopTracking();
         void stopAvailableBackground();setAvailabilityBackground(false);setLastSync(null);setSyncStatus('loading');
         Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(()=>{});
@@ -1156,6 +1191,8 @@ function Main() {
     P(v=>({...v,...updated})); SN('تم رفع صورة الكابتن وحفظها بنجاح');
   }
 
+  if(session&&biometric.blocked)return <BiometricLockScreen gate={biometric} hasEmail={!!session.user.email}/>;
+
   return (
     <SafeAreaView style={s.safe}>
       <StatusBar barStyle="dark-content" backgroundColor={theme.background}/>
@@ -1292,6 +1329,14 @@ function Main() {
               <View style={s.brandBadge}><Text style={s.brandBadgeText}>أ</Text></View>
             </View>}
 
+            {tab==='home'&&!push.enabled&&!push.checking&&<View style={s.card}>
+              <View style={s.optionRow}><View style={{flex:1}}>
+                <Text style={s.label}>تنبيهات المشاوير على الهاتف</Text>
+                <Text style={s.caption}>{profile.role==='driver'?'اعرف بالطلبات القريبة حتى عندما لا تكون فاتح أركب.':'اعرف بقبول الكابتن ووصوله وبدء الرحلة حتى بعد إغلاق أركب.'}</Text>
+              </View><Ionicons name="notifications-outline" size={25} color={G}/></View>
+              <Button secondary onPress={()=>D('notifications')}>تفعيل إشعارات الهاتف</Button>
+            </View>}
+
             {tab==='account' && <View style={s.card}>
               <View style={s.driverCard}>
                 {profile.avatar_url ? <Image source={{uri:profile.avatar_url}} style={s.driverAvatar}/> :
@@ -1304,18 +1349,36 @@ function Main() {
               <Text style={s.label}>بيانات التواصل</Text>
               <Text style={s.body}>{profile.contact_phone||'لا يوجد رقم مسجل'}</Text>
               <Text style={s.body}>{session.user.email}</Text>
+              <View style={s.tripSummary}>
+                <View style={s.optionRow}><Ionicons name="finger-print-outline" size={28} color={G}/><View style={{flex:1,gap:5}}>
+                  <Text style={s.label}>فتح التطبيق بالبصمة</Text>
+                  <Text style={s.caption}>{biometric.enabled===true?'مفعّل على هذا الجهاز':'اختياري • يحمي فتح التطبيق فقط'}</Text>
+                </View></View>
+                {biometric.available===false&&<Text style={s.caption}>سجّل بصمة قوية في إعدادات الهاتف أولاً إن كنت ترغب في تفعيلها.</Text>}
+                {!!biometric.error&&<Text style={s.error}>{biometric.error}</Text>}
+                <Button secondary={biometric.enabled!==false} disabled={biometric.busy||biometric.phase==='checking'}
+                  onPress={biometric.enabled===false?biometric.enable:biometric.disable}>
+                  {biometric.busy?'جارٍ التحقق…':biometric.enabled===false?'تفعيل البصمة':'إيقاف حماية البصمة'}
+                </Button>
+                <Text style={s.caption}>يبقى تسجيل الدخول بكلمة المرور متاحاً. لا يخزن أركب البصمة ولا يرسلها إلى الخادم.</Text>
+              </View>
+              <Button secondary onPress={()=>openSupport()}>الدعم الفني والشكاوى</Button>
+              {profile.role==='driver'&&<Button secondary onPress={()=>D('earnings')}>لوحة الأرباح</Button>}
                {profile.role==='driver' && <Text style={s.caption}>بيانات المركبات والاعتماد بالأسفل.</Text>}
               <Button secondary disabled={busy} onPress={()=>run(async()=>{
                                  await stopSharing();
+                 if(passengerShare.record)await endPassengerShare(db,userId,passengerShare.record.rideId);
                  await stopAvailableBackground();setAvailabilityBackground(false);
                  if(driver?.approved && driver?.online) {
                   await db.from('drivers').update({online:false}).eq('id',userId);
                 }
-                await push.unregister().catch(()=>{});
+                try { await push.unregister(); } catch { throw Error('تعذر إيقاف إشعارات هذا الحساب. تحقق من الاتصال وحاول تسجيل الخروج مرة أخرى.'); }
                 check(await db.auth.signOut());
               })}>تسجيل الخروج</Button>
             </View>}
 
+            {tab==='support'&&<SupportPanel key={userId} db={db} userId={userId} rideId={supportRide} onBack={()=>D('account')}/>}
+            {tab==='earnings'&&profile.role==='driver'&&<EarningsPanel summary={earnings} period={earningsPeriod} onPeriod={setEarningsPeriod} onBack={()=>D('account')}/>}
             {tab==='favorites' && <>
               {profile.role==='passenger' && <>
                 <View style={s.card}>
@@ -1353,6 +1416,7 @@ function Main() {
               </>}
               <View style={s.card}>
                 <Text style={s.title}>السلامة والمساعدة</Text>
+                <Button secondary onPress={()=>openSupport()}>الدعم الفني وإرسال شكوى</Button>
                 <Text style={s.caption}>احفظ رقم شخص تثق به للاتصال السريع عند الحاجة.</Text>
                 <Field label="جهة اتصال موثوقة" value={emergencyPhone} onChangeText={setEmergencyPhone} placeholder="+249XXXXXXXXX" keyboardType="phone-pad" maxLength={13}/>
                 <Button disabled={busy||!localReady} onPress={()=>run(saveEmergency)}>حفظ الرقم</Button>
@@ -1364,8 +1428,8 @@ function Main() {
             {tab==='notifications' && (
               <View style={s.card}>
                 <Text style={s.title}>إشعارات الرحلات</Text>
-                <Text style={s.caption}>{push.enabled?'إشعارات الهاتف مفعّلة':push.registrationError?'تعذر تسجيل الهاتف؛ حاول التفعيل مرة أخرى':'فعّل إشعارات الهاتف لتصلك مستجدات الرحلة.'}</Text>
-                {!push.enabled && <Button secondary disabled={busy} onPress={()=>run(async()=>{
+                <Text style={s.caption}>{push.checking?'جاري التحقق من إعدادات إشعارات الهاتف…':push.enabled?'إشعارات الهاتف مفعّلة':push.registrationError?'تعذر تسجيل الهاتف؛ حاول التفعيل مرة أخرى':'فعّل إشعارات الهاتف لتصلك مستجدات الرحلة.'}</Text>
+                {!push.enabled && <Button secondary disabled={busy||push.checking} onPress={()=>run(async()=>{
                   try {
                     const enabled=await push.enable();
                     if (!enabled) { SN('اسمح بإشعارات أركب من إعدادات الهاتف'); return; }
@@ -1374,10 +1438,11 @@ function Main() {
                     E('تعذر تفعيل إشعارات الهاتف. يمكنك متابعة الإشعارات من هذه الشاشة.');
                   }
                 })}>تفعيل الإشعارات على الهاتف</Button>}
+                {!push.enabled&&!push.checking&&<Button secondary onPress={()=>Linking.openSettings()}>فتح إعدادات الهاتف</Button>}
                 {!notifications.length && <Text style={s.body}>لا توجد إشعارات حالياً</Text>}
                 {notifications.map(item=>(
                   <TouchableOpacity key={item.id} style={s.tripSummary} disabled={!item.ride_id}
-                    onPress={()=>openRide(item.ride_id)}>
+                    onPress={()=>openRide(item.ride_id,item.title)}>
                     <Text style={s.label}>{item.title}</Text>
                     <Text style={s.body}>{item.body}</Text>
                     <Text style={s.body}>{new Date(item.created_at).toLocaleString()}</Text>
@@ -1403,7 +1468,7 @@ function Main() {
                     </Button>
                   )}
                   <Text style={s.body}>🛺 نوع المركبة: {activeRide.vehicle_kind==='rickshaw'?'ركشة':'تكتك نقل'}</Text>
-                  <Text style={s.body}>📏 المسافة: {Number(activeRide.distance_km||0).toFixed(1)} كم تقريباً</Text>
+                  <Text style={s.body}>📏 المسافة: {Number(activeRoute.status==='ready'?activeRoute.distanceKm:activeRide.distance_km||0).toFixed(1)} كم {activeRoute.status==='ready'?'حسب الطريق':'(تقدير محفوظ)'}</Text>
                    <Text style={s.body}>⏱ مدة الطريق المتوقعة: {activeRoute.status==='ready'?Math.max(1,Math.ceil(activeRoute.durationMin)):Math.max(3,Math.ceil(Number(activeRide.distance_km||0)*3))} دقيقة تقريباً {activeRoute.status==='ready'?'حسب الطريق':'(تقدير أولي)'}</Text>
                   <Text style={s.fare}>💰 الأجرة: {activeRide.agreed_fare??activeRide.proposed_fare} ج.س</Text>
                 </View>
@@ -1461,6 +1526,15 @@ function Main() {
                 {chatOpen&&activeRide.driver_id&&activeStates.includes(activeRide.status)&&
                   <RideChat key={activeRide.id} rideId={activeRide.id} userId={userId}/>}
                 {/^\+249\d{9}$/.test(emergencyPhone.trim())&&<Button secondary onPress={()=>run(()=>Linking.openURL('tel:'+emergencyPhone.trim()))}>اتصال بجهة موثوقة</Button>}
+                {profile.role==='passenger'&&activeRide.driver_id&&activeStates.includes(activeRide.status)&&<View style={s.tripSummary}>
+                  <Text style={s.label}>مشاركة التتبع المباشر مع الأسرة</Text>
+                  <Text style={s.caption}>{shareLink?'المشاركة مفعّلة حتى '+new Date(passengerShare.record.expiresAt).toLocaleTimeString()+' أو نهاية الرحلة.':'يمكن لشخص تثق به متابعة موقعك أثناء الرحلة.'}</Text>
+                  {!shareReady()?<Text style={s.caption}>صفحة التتبع لم تُفعّل على الخادم بعد.</Text>:<>
+                    <Button disabled={busy} onPress={()=>run(shareLink?()=>sendShareLink(shareLink):startLiveShare)}>{shareLink?'إعادة مشاركة الرابط':'مشاركة موقعي المباشر'}</Button>
+                    <Button secondary disabled={busy} onPress={()=>run(async()=>{await endPassengerShare(db,userId,activeRide.id);passengerShare.setRecord(null);SN('تم إلغاء رابط المشاركة');})}>إيقاف وإلغاء رابط التتبع</Button>
+                  </>}
+                </View>}
+                <Button secondary onPress={()=>openSupport(activeRide.id)}>مساعدة أو شكوى لهذه الرحلة</Button>
                 {profile.role==='passenger' && <Button secondary onPress={()=>run(()=>Share.share({
                   message:'رحلتي عبر أركب | '+activeRide.pickup+' إلى '+activeRide.destination+' | الحالة: '+states[activeRide.status]
                 }))}>مشاركة تفاصيل الرحلة</Button>}
@@ -1567,6 +1641,9 @@ function Main() {
                 <Text style={s.body}>
                   {route.status==='ready'?'المسافة حسب الطريق المتاح • الزمن '+Math.ceil(route.durationMin)+' دقيقة تقريباً':route.status==='loading'?'جاري حساب الطريق… المسافة الحالية تقدير أولي':'المسافة تقديرية بخط مستقيم، وليست مسافة الطريق الفعلية.'}
                 </Text>
+                {pickupPoint&&destPoint&&route.status!=='ready'&&route.status!=='loading'&&<Button secondary onPress={route.reload}>إعادة حساب الطريق الفعلي</Button>}
+                <Text style={s.caption}>الأجرة النهائية حسب الاتفاق مع الكابتن.
+                </Text>
 
                 <Text style={s.label}>اختر نوع المركبة</Text>
                 <View style={s.row}>
@@ -1616,10 +1693,11 @@ function Main() {
                 <View style={s.optionRow}><View style={{flex:1}}><Text style={s.title}>العمل اليوم</Text><Text style={s.caption}>{driver?.approved?(driver.online?'متاح لاستقبال الطلبات':'غير متاح الآن'):'أكمل التسجيل والاعتماد'}</Text></View>
                   <Ionicons name={driver?.online?'radio-button-on':'radio-button-off'} size={32} color={driver?.online?G:theme.muted}/></View>
                 {driver?.approved?<Button disabled={busy||!!activeRide} secondary={driver.online} onPress={()=>act(toggleAvailability)}>{driver.online?'إيقاف استقبال الطلبات':'بدء استقبال الطلبات'}</Button>:<Button onPress={()=>D('account')}>إكمال حساب الكابتن</Button>}
-                {driver?.approved&&driver.online&&!activeRide&&<><Text style={s.caption}>{availabilityBackground?'ظهور المركبة في الخلفية مفعّل':'حالياً يتم تحديث موقعك أثناء فتح التطبيق.'}</Text>
+                {driver?.approved&&driver.online&&!activeRide&&<><Text style={s.caption}>{availabilityBackground?'ظهور المركبة في الخلفية مفعّل':'للوصول إليك بطلبات قريبة بعد إغلاق التطبيق، فعّل ظهور الخلفية بالإضافة إلى إشعارات الهاتف.'}</Text>
                   <Button secondary disabled={busy} onPress={()=>run(availabilityBackground?async()=>{await stopAvailableBackground();setAvailabilityBackground(false);}:enableAvailableBackground)}>{availabilityBackground?'إيقاف ظهور الخلفية':'تفعيل ظهور الخلفية'}</Button></>}
                 <Text style={s.caption}>الرحلات المكتملة ضمن آخر 50 رحلة</Text>
                 <Text style={s.fare}>{trips.filter(t=>t.status==='completed'&&t.driver_id===userId).length} رحلة</Text>
+                <Button secondary onPress={()=>D('earnings')}>عرض الأرباح اليومية والأسبوعية والشهرية</Button>
               </View>
             )}
             {profile.role==='driver' && tab==='account' && (
@@ -1705,6 +1783,7 @@ function Main() {
                 <Text style={s.fare}>
                   {t.agreed_fare??t.proposed_fare} ج.س
                 </Text>
+                {(t.passenger_id===userId||t.driver_id===userId)&&<Button secondary onPress={()=>openSupport(t.id)}>إبلاغ عن مشكلة</Button>}
                 {!!t.pickup_note && <Text style={s.body}>مكان الالتقاء: {t.pickup_note}</Text>}
                 {!!t.cargo_description && <Text style={s.body}>الحمولة: {t.cargo_description}</Text>}
                 {!!t.cargo_photo_path && (
@@ -1803,12 +1882,106 @@ function Main() {
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • v0.8.0</Text>
+        <Text style={s.footer}>ARKAB • v0.9.0</Text>
       </ScrollView>
       {!!session && !!profile && <TabBar tab={tab} isDriver={profile.role==='driver'}
         onChange={key=>{D(key);if(key==='trips'||key==='notifications')refresh();}}/>}
     </SafeAreaView>
   );
+}
+
+function BiometricLockScreen({gate,hasEmail}){
+  const [showPassword,setShowPassword]=useState(false);
+  const [password,setPassword]=useState('');
+  const working=gate.phase==='checking'||gate.busy;
+  const submit=async()=>{if(!password)return;const candidate=password;setPassword('');await gate.unlockPassword(candidate);};
+  return <SafeAreaView style={s.safe}>
+    <StatusBar barStyle="dark-content" backgroundColor={theme.background}/>
+    <ScrollView contentContainerStyle={s.lockPage} keyboardShouldPersistTaps="handled">
+      <Image source={require('./assets/logo.png')} style={s.lockLogo} accessibilityLabel="شعار أركب"/>
+      <View style={s.lockBadge}><Ionicons name="finger-print-outline" size={55} color={G}/></View>
+      <Text style={[s.title,{textAlign:'center'}]}>أركب | حسابك محمي</Text>
+      <Text style={[s.body,{textAlign:'center'}]}>{gate.phase==='checking'?'جارٍ التحقق من إعدادات الأمان…':gate.enabled===null?'يلزم التحقق بكلمة مرور الحساب.':'افتح التطبيق بالبصمة أو كلمة مرور حسابك.'}</Text>
+      {working&&<ActivityIndicator color={G}/>}
+      {!!gate.error&&<Text style={s.error}>{gate.error}</Text>}
+      {gate.phase!=='checking'&&<>
+        {gate.enabled===true&&<Button disabled={working} onPress={gate.unlock}>فتح بالبصمة</Button>}
+        {hasEmail?<Button secondary disabled={working} onPress={()=>{setPassword('');setShowPassword(v=>!v);}}>{showPassword?'إخفاء كلمة المرور':'استخدام كلمة مرور الحساب'}</Button>:
+          <Text style={s.caption}>حسابك لا يحتوي على بريد إلكتروني. استخدم البصمة المسجلة على الهاتف أو تواصل مع الدعم لاستعادة الوصول.</Text>}
+        {hasEmail&&showPassword&&<View style={s.card}>
+          <Field label="كلمة مرور حسابك" value={password} onChangeText={setPassword} secure/>
+          <Button disabled={working||!password} onPress={submit}>فتح الحساب بكلمة المرور</Button>
+        </View>}
+      </>}
+      <Text style={[s.caption,{textAlign:'center'}]}>البصمة خيار محلي على هذا الهاتف، ولا تغيّر حسابك أو توقف تتبع الرحلة المصرّح به.</Text>
+    </ScrollView>
+  </SafeAreaView>;
+}
+
+function money(value){return Number.isFinite(Number(value))?Number(value).toLocaleString('ar-SD',{maximumFractionDigits:2})+' ج.س':'—';}
+function EarningsPanel({summary,period,onPeriod,onBack}){
+  const data=summary.data;
+  return <View style={s.card}>
+    <Text style={s.title}>لوحة أرباح الكابتن</Text>
+    <Text style={s.caption}>حسب وقت إكمال الرحلة بتوقيت السودان؛ المبالغ المتفق عليها وليست إثباتاً للتحصيل النقدي.</Text>
+    <View style={s.row}>{[['day','اليوم'],['week','هذا الأسبوع'],['month','هذا الشهر']].map(([key,label])=><Button key={key} secondary={period!==key} onPress={()=>onPeriod(key)}>{label}</Button>)}</View>
+    {summary.status==='loading'&&<ActivityIndicator color={G}/>}
+    {data&&<><View style={s.earningsHero}><Text style={[s.caption,{color:'#E6F1E9'}]}>إجمالي الأجرة المتفق عليها</Text><Text style={s.earningsTotal}>{money(data.gross)}</Text><Text style={{color:'#E6F1E9',textAlign:'right'}}>{data.ride_count} رحلة مكتملة</Text></View>
+      <View style={s.row}><View style={s.metric}><Text style={s.caption}>متوسط الأجرة</Text><Text style={s.label}>{data.ride_count-data.missing_fare_count>0?money(Number(data.gross)/(data.ride_count-data.missing_fare_count)):'—'}</Text></View><View style={s.metric}><Text style={s.caption}>عمولات مسجلة</Text><Text style={s.label}>{money(data.commission_recorded)}</Text></View></View>
+      {data.missing_fare_count>0&&<Text style={s.caption}>عدد رحلات بدون قيمة أجرة موثقة: {data.missing_fare_count}</Text>}
+      {data.missing_commission_count>0&&<Text style={s.caption}>العمولة غير موثقة في {data.missing_commission_count} رحلة؛ لا يتم تقدير صافي الأرباح منها.</Text>}
+      {data.legacy_count>0&&<View style={s.tripSummary}><Text style={s.label}>رحلات سابقة بلا تاريخ إكمال</Text><Text style={s.body}>{data.legacy_count} رحلة • {money(data.legacy_gross)}</Text><Text style={s.caption}>غير مدرجة في فترات اليوم والأسبوع والشهر.</Text></View>}
+    </>}
+    {summary.status==='error'&&<Text style={s.error}>تعذر تحميل الأرباح. تأكد من الاتصال أو تفعيل ميزة الأرباح من الإدارة.</Text>}
+    <Button secondary onPress={summary.refresh}>تحديث الأرباح</Button><Button secondary onPress={onBack}>العودة للحساب</Button>
+  </View>;
+}
+
+function SupportPanel({db,userId,rideId,onBack}){
+  const [category,setCategory]=useState('ride');
+  const [body,setBody]=useState('');const [selectedRide,setSelectedRide]=useState(rideId);
+  const [posting,setPosting]=useState(false);const pending=useRef(false);const ticketDraft=useRef(null);
+  const [message,setMessage]=useState('');const [failure,setFailure]=useState('');
+  const tickets=useSupportTickets(db,userId,true);
+  useEffect(()=>{setSelectedRide(rideId);},[rideId]);
+  async function submit(){
+    if(pending.current||!validateTicket(category,body))return;
+    pending.current=true;setPosting(true);setFailure('');setMessage('');
+    try{
+      const values={user_id:userId,ride_id:selectedRide||null,category,body:body.trim()};
+      const fingerprint=JSON.stringify(values);
+      if(ticketDraft.current?.fingerprint!==fingerprint)ticketDraft.current={fingerprint,id:Crypto.randomUUID()};
+      const id=ticketDraft.current.id;
+      const {error}=await db.from('complaints').insert({...values,id});
+      if(error){
+        if(error.code!=='23505')throw error;
+        const existing=await db.from('complaints').select('id,ride_id,category,body').eq('id',id).eq('user_id',userId).maybeSingle();
+        if(existing.error||!existing.data||existing.data.ride_id!==values.ride_id||existing.data.category!==category||existing.data.body!==values.body)throw error;
+      }
+      ticketDraft.current=null;
+      setBody('');setSelectedRide(null);setMessage('تم إرسال طلبك للدعم. يمكنك متابعة حالته أدناه.');await tickets.refresh();
+    }catch{setFailure('تعذر إرسال الطلب. تحقق من الاتصال وحاول مرة أخرى.');}
+    finally{pending.current=false;setPosting(false);}
+  }
+  return <View style={s.card}>
+    <Text style={s.title}>الدعم الفني والشكاوى</Text><Text style={s.caption}>اختر نوع المشكلة واكتب التفاصيل. لا تدرج كلمات المرور أو أرقاماً حساسة في الطلب.</Text>
+    <View style={s.row}>{Object.entries(supportCategories).map(([key,label])=><Button key={key} secondary={category!==key} disabled={posting} onPress={()=>setCategory(key)}>{label}</Button>)}</View>
+    {selectedRide&&<View style={s.tripSummary}><Text style={s.caption}>الطلب مرتبط بالرحلة {selectedRide.slice(0,8)}</Text><Button secondary disabled={posting} onPress={()=>setSelectedRide(null)}>إرسال شكوى عامة بدلاً من ذلك</Button></View>}
+    <Text style={s.label}>وصف المشكلة</Text><TextInput accessibilityLabel="وصف المشكلة" style={[s.input,{minHeight:110,textAlignVertical:'top'}]} multiline value={body} maxLength={1500} onChangeText={setBody} placeholder="اكتب تفاصيل طلبك..."/>
+    <Text style={s.caption}>{body.length}/1500</Text><Button disabled={posting||!validateTicket(category,body)} onPress={submit}>{posting?'جارٍ الإرسال…':'إرسال طلب الدعم'}</Button>
+    {!!failure&&<Text style={s.error}>{failure}</Text>}{!!message&&<Text style={s.success}>{message}</Text>}
+    <Text style={s.title}>طلباتي السابقة</Text>
+    {tickets.status==='loading'&&<ActivityIndicator color={G}/>}
+    {tickets.status==='error'&&<Text style={s.error}>تعذر تحميل طلبات الدعم. حاول التحديث مرة أخرى.</Text>}
+    {tickets.status==='ready'&&!tickets.data?.length&&<Text style={s.caption}>لا توجد طلبات دعم حتى الآن.</Text>}
+    {(tickets.data||[]).map(t=><View key={t.id} style={s.tripSummary}>
+      <Text style={s.badge}>{supportStatuses[t.status]||'قيد المراجعة'}</Text><Text style={s.label}>{supportCategories[t.category]||'أخرى'} • #{t.id.slice(0,8)}</Text>
+      <Text style={s.body}>{t.body}</Text><Text style={s.caption}>{new Date(t.created_at).toLocaleString('ar-SD')}</Text>
+      {!!t.reply&&<View style={s.chatOther}><Text style={s.label}>رد الدعم الفني</Text><Text style={s.body}>{t.reply}</Text></View>}
+    </View>)}
+    <Button secondary onPress={tickets.refresh}>تحديث الطلبات</Button><Button secondary onPress={onBack}>العودة للحساب</Button>
+    <Text style={s.caption}>هذا النظام ليس خدمة طوارئ فورية. في الحالات العاجلة اتصل بجهة موثوقة مباشرة.</Text>
+  </View>;
 }
 
 function RideProgress({status}){
@@ -1834,6 +2007,9 @@ export default function App(){
 
 const s=StyleSheet.create({
   safe:{flex:1,backgroundColor:theme.background},
+  lockPage:{flexGrow:1,justifyContent:'center',padding:24,gap:16},
+  lockLogo:{width:84,height:84,resizeMode:'contain',borderRadius:20,alignSelf:'center'},
+  lockBadge:{width:100,height:100,borderRadius:50,backgroundColor:theme.soft,alignSelf:'center',alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:theme.border},
   page:{padding:theme.space.md,gap:theme.space.md,paddingBottom:theme.space.lg},
   fixedHeader:{backgroundColor:theme.deep,paddingVertical:12,paddingHorizontal:16,
     flexDirection:'row-reverse',alignItems:'center',justifyContent:'space-between',gap:12},
@@ -1880,6 +2056,9 @@ const s=StyleSheet.create({
   avatarEmpty:{minHeight:76,alignItems:'center',justifyContent:'center',backgroundColor:theme.soft,borderRadius:theme.radius.md},
   driverAvatarFallback:{width:58,height:58,borderRadius:29,backgroundColor:G,alignItems:'center',justifyContent:'center'},
   driverInitial:{color:Y,fontSize:26,fontWeight:'bold'},
+  earningsHero:{padding:20,borderRadius:18,backgroundColor:theme.deep,gap:10},
+  earningsTotal:{fontSize:32,fontWeight:'900',color:theme.gold,textAlign:'right'},
+  metric:{flex:1,minWidth:130,padding:14,borderRadius:14,backgroundColor:theme.soft,gap:8},
   driverStats:{padding:14,gap:8,borderRadius:theme.radius.md,backgroundColor:theme.soft},
   rateBox:{padding:12,backgroundColor:theme.background,borderRadius:theme.radius.md,gap:8},
   offer:{gap:8,padding:12,backgroundColor:theme.soft,borderRadius:theme.radius.sm},
