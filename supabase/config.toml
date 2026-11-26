@@ -2,3 +2,9 @@ project_id = "hfhkscqmsmxsxzjfxzew"
 
 [functions.arkab-ride-push]
 verify_jwt = false
+
+[functions.arkab-live-share]
+verify_jwt = false
+
+[functions.arkab-road-route]
+verify_jwt = false
