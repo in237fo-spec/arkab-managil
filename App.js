@@ -1608,9 +1608,9 @@ function Main() {
                 {nearby.status!=='idle' && (
                   <View style={s.tripSummary}>
                     <View style={s.optionRow}><Text style={[s.label,{flex:1}]}>المركبات المتاحة حول الانطلاق</Text><Pressable accessibilityRole="button" accessibilityLabel="تحديث المركبات القريبة" style={s.iconButton} onPress={nearby.refresh}><Ionicons name="refresh-outline" size={22} color={G}/></Pressable></View>
-                    <Text style={s.body}>{nearby.status==='ready'
+                    {nearby.status==='ready'
                       ? <View style={s.optionRow}><MaterialCommunityIcons name="rickshaw" size={19} color={G}/><Text style={s.body}>{nearbyCount('rickshaw')} ركشة</Text><MaterialCommunityIcons name="truck-cargo-container" size={19} color={G}/><Text style={s.body}>{nearbyCount('cargo_tuktuk')} تكتك شحن</Text></View>
-                      : nearby.status==='loading' ? 'جاري تحديث المركبات القريبة…' : 'تعذر تحميل المركبات القريبة'}</Text>
+                      : <Text style={s.body}>{nearby.status==='loading' ? 'جاري تحديث المركبات القريبة…' : 'تعذر تحميل المركبات القريبة'}</Text>}
                     {nearby.status==='ready'&&<Text style={s.caption}>آخر تحديث: {new Date(nearby.updatedAt).toLocaleTimeString()} • المواقع تقريبية لحماية خصوصية الكباتن.</Text>}
                   </View>
                 )}
