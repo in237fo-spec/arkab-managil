@@ -4,7 +4,7 @@ import SplashIntro from './SplashIntro';
 import {
   View, Text, TextInput, TouchableOpacity,
   ScrollView, Image, StyleSheet,
-  ActivityIndicator, StatusBar, AppState, Linking, Alert
+  ActivityIndicator, StatusBar, AppState, Linking, Alert, Platform
 } from 'react-native';
 import {SafeAreaProvider, SafeAreaView}
   from 'react-native-safe-area-context';
@@ -631,9 +631,7 @@ function Main() {
     return ()=>{
       cancelled=true;
       stopTracking();
-      refreshSequence.current++;
       clearInterval(timer);
-      foreground.remove();
       db.removeChannel(channel);
     };
 
