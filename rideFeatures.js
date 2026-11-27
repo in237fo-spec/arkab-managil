@@ -25,9 +25,9 @@ export function useNearbyVehicles(db, userId, pickup) {
       if (pending || AppState.currentState !== 'active') return;
       pending = true;
       try {
-        const {data,error} = await db.rpc('nearby_vehicles',{p_lat:lat,p_lng:lng});
+        const {data,error} = await db.rpc('nearby_driver_details',{p_lat:lat,p_lng:lng});
         if (!cancelled) setResult(error ?
-          {rows:[],status:'error'} : {rows:data || [],status:'ready',updatedAt:Date.now()});
+          {rows:[],status:'error'} : {rows:(data || []).map(row=>({...row,vehicle_count:1})),status:'ready',updatedAt:Date.now()});
       } catch {
         if (!cancelled) setResult({rows:[],status:'error'});
       } finally {
