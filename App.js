@@ -1905,7 +1905,7 @@ function Main() {
           </>
         ):null}
 
-        <Text style={s.footer}>ARKAB • v0.9.1</Text>
+        <Text style={s.footer}>ARKAB • v1.0.0</Text>
       </ScrollView>
       {!!session && !!profile && <TabBar tab={tab} isDriver={profile.role==='driver'}
         onChange={key=>{D(key);if(key==='trips'||key==='notifications')refresh();}}/>}
@@ -2137,7 +2137,7 @@ const s=StyleSheet.create({
   driverModalHandle:{width:44,height:5,borderRadius:3,backgroundColor:theme.border,alignSelf:'center',marginBottom:2},
   driverAvailableBadge:{flexDirection:'row-reverse',alignItems:'center',gap:5,paddingHorizontal:9,paddingVertical:6,borderRadius:12,backgroundColor:'#E7F5EC'},
   driverAvailableDot:{width:7,height:7,borderRadius:4,backgroundColor:'#16834B'},
-  driverAvailableText:{fontSize:11,fontWeight:'800',color:'#16834B'}
+  driverAvailableText:{fontSize:11,fontWeight:'800',color:'#16834B'},
   iconButton:{minWidth:46,minHeight:46,alignItems:'center',justifyContent:'center',borderRadius:14,backgroundColor:theme.soft},
   syncBanner:{flexDirection:'row-reverse',alignItems:'center',gap:10,backgroundColor:theme.warning,borderRadius:16,padding:12,borderWidth:1,borderColor:'#F0DDA9'},
   optionRow:{flexDirection:'row-reverse',alignItems:'center',gap:10,minHeight:46},
