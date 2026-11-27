@@ -4,7 +4,7 @@ import SplashIntro from './SplashIntro';
 import {
   View, Text as NativeText, TextInput as NativeInput, TouchableOpacity,
   ScrollView, Image, StyleSheet,
-  ActivityIndicator, StatusBar, AppState, Linking, Alert, Share, Pressable, Platform
+  ActivityIndicator, StatusBar, AppState, Linking, Alert, Share, Pressable, Platform, Modal
 } from 'react-native';
 import {SafeAreaProvider, SafeAreaView}
   from 'react-native-safe-area-context';
@@ -332,10 +332,10 @@ function distanceKm(a,b) {
   return 12742 * Math.asin(Math.sqrt(Math.min(1,x)));
 }
 
-function Pin({id,point,color,label,icon,count}) {
+function Pin({id,point,color,label,icon,count,onPress}) {
   if (!point) return null;
   return (
-    <Marker id={id} lngLat={point}>
+    <Marker id={id} lngLat={point} onPress={onPress}>
       <View style={s.pinWrap}>
         <View style={[s.pin,{backgroundColor:color}]}>
           {icon
@@ -349,7 +349,7 @@ function Pin({id,point,color,label,icon,count}) {
 }
 
 function RideMap({
-  pickup,destination,driver,onSelect,nearby=[],nearbyAnchor,route,staleDriver=false
+  pickup,destination,driver,onSelect,nearby=[],nearbyAnchor,route,staleDriver=false,onSelectNearbyDriver
 }) {
   const center = pickup || driver || destination || nearbyAnchor || CENTER;
   const camera=useRef(null);
@@ -390,12 +390,13 @@ function RideMap({
           <Layer id="road-route-line" type="line" paint={{'line-color':G,'line-width':5,'line-opacity':0.9}}/>
         </GeoJSONSource>}
         {nearby.map(cell=>(
-          <Pin key={cell.kind+'-'+cell.lat+'-'+cell.lng}
-            id={'nearby-'+cell.kind+'-'+cell.lat+'-'+cell.lng}
+          <Pin key={cell.driver_id || cell.kind+'-'+cell.lat+'-'+cell.lng}
+            id={'nearby-driver-'+(cell.driver_id || cell.kind+'-'+cell.lat+'-'+cell.lng)}
             point={[cell.lng,cell.lat]}
             color={cell.kind==='rickshaw'?'#246D52':'#915319'}
             icon={cell.kind==='rickshaw'?'rickshaw':'truck-cargo-container'}
-            count={cell.vehicle_count}/>
+            count={cell.vehicle_count}
+            onPress={()=>onSelectNearbyDriver?.(cell)}/>
         ))}
         <Pin id="pickup" point={pickup}
           color={G} label="1"/>
@@ -464,6 +465,7 @@ function Main() {
   const [price,Q] = useState('');
   const [pickupNote,setPickupNote] = useState('');
   const [nearbyAnchor,setNearbyAnchor] = useState(null);
+  const [selectedNearbyDriver,setSelectedNearbyDriver] = useState(null);
   const [forSomeone,setForSomeone] = useState(false);
   const [recipientPhone,setRecipientPhone] = useState('+249');
   const [cargoDescription,setCargoDescription] = useState('');
@@ -574,6 +576,7 @@ function Main() {
   },[userId]);
   useEffect(()=>{setChatOpen(false);},[activeRide?.id]);
   const nearby = useNearbyVehicles(db,profile?.role==='passenger' && !activeRide && tab==='home' ? userId : null,pickupPoint || nearbyAnchor);
+  useEffect(()=>{if(profile?.role!=='passenger'||activeRide||tab!=='home')setSelectedNearbyDriver(null);},[profile?.role,activeRide?.id,tab]);
   const nearbyCount = kind => nearby.rows.filter(row=>row.kind===kind)
     .reduce((total,row)=>total+row.vehicle_count,0);
   useAvailableDriverLocation(db,profile?.role==='driver' && driver?.approved && driver?.online && !activeRide ? userId : null,E);
@@ -1627,6 +1630,7 @@ function Main() {
                   pickup={pickupPoint}
                   destination={destPoint}
                   route={route.status==='ready'?route:null}
+                  onSelectNearbyDriver={setSelectedNearbyDriver}
                   onSelect={p=>{
                     if(selectPoint==='pickup'){
                       AP(p);
@@ -1905,6 +1909,37 @@ function Main() {
       </ScrollView>
       {!!session && !!profile && <TabBar tab={tab} isDriver={profile.role==='driver'}
         onChange={key=>{D(key);if(key==='trips'||key==='notifications')refresh();}}/>}
+      <Modal visible={!!selectedNearbyDriver} transparent animationType="slide"
+        onRequestClose={()=>setSelectedNearbyDriver(null)}>
+        <View style={s.driverModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} accessibilityRole="button"
+            accessibilityLabel="إغلاق بيانات الكابتن" onPress={()=>setSelectedNearbyDriver(null)}/>
+          {!!selectedNearbyDriver&&<View style={s.driverModalCard}>
+            <View style={s.driverModalHandle}/>
+            <View style={s.optionRow}>
+              <Text style={[s.title,{flex:1}]}>بيانات الكابتن القريب</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="إغلاق" style={s.iconButton}
+                onPress={()=>setSelectedNearbyDriver(null)}>
+                <Ionicons name="close" size={22} color={theme.ink}/>
+              </Pressable>
+            </View>
+            <View style={s.driverCard}>
+              {selectedNearbyDriver.avatar_url
+                ? <Image source={{uri:selectedNearbyDriver.avatar_url}} style={s.driverAvatar}/>
+                : <View style={s.driverAvatarFallback}><MaterialCommunityIcons name="account" size={30} color="#FFFFFF"/></View>}
+              <View style={{flex:1,gap:4}}>
+                <Text style={s.label}>{selectedNearbyDriver.full_name||'كابتن أركب'}</Text>
+                <Text style={s.caption}>{selectedNearbyDriver.kind==='rickshaw'?'ركشة':'تكتك نقل'}</Text>
+                <Text style={s.caption}>على بُعد نحو {Number(selectedNearbyDriver.distance_km||0).toLocaleString('ar-SD',{minimumFractionDigits:1,maximumFractionDigits:1})} كم</Text>
+              </View>
+              <View style={s.driverAvailableBadge}><View style={s.driverAvailableDot}/><Text style={s.driverAvailableText}>متاح</Text></View>
+            </View>
+            <Text style={s.caption}>موقع المركبة تقريبي ويتحدث تلقائياً. رقم الهاتف ورقم اللوحة يظهران بعد قبول الرحلة حفاظاً على خصوصية الكابتن.</Text>
+            <Button onPress={()=>{V(selectedNearbyDriver.kind);setSelectedNearbyDriver(null);}}>اختيار {selectedNearbyDriver.kind==='rickshaw'?'الركشة':'تكتك النقل'}</Button>
+            <Button secondary onPress={()=>setSelectedNearbyDriver(null)}>إغلاق</Button>
+          </View>}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2097,6 +2132,12 @@ const s=StyleSheet.create({
   map:{width:'100%',height:315},
   mapControl:{position:'absolute',right:12,top:12,width:46,height:46,borderRadius:16,backgroundColor:'#FFFFFF',alignItems:'center',justifyContent:'center',elevation:3,shadowColor:'#000',shadowOpacity:0.1,shadowRadius:8,shadowOffset:{width:0,height:2}},
   mapError:{position:'absolute',left:12,right:12,bottom:35,padding:12,borderRadius:12,backgroundColor:theme.surface,gap:8},
+  driverModalBackdrop:{flex:1,justifyContent:'flex-end',backgroundColor:'rgba(7,20,15,0.48)'},
+  driverModalCard:{backgroundColor:theme.surface,borderTopLeftRadius:26,borderTopRightRadius:26,padding:20,paddingBottom:28,gap:14,borderWidth:1,borderColor:theme.border},
+  driverModalHandle:{width:44,height:5,borderRadius:3,backgroundColor:theme.border,alignSelf:'center',marginBottom:2},
+  driverAvailableBadge:{flexDirection:'row-reverse',alignItems:'center',gap:5,paddingHorizontal:9,paddingVertical:6,borderRadius:12,backgroundColor:'#E7F5EC'},
+  driverAvailableDot:{width:7,height:7,borderRadius:4,backgroundColor:'#16834B'},
+  driverAvailableText:{fontSize:11,fontWeight:'800',color:'#16834B'}
   iconButton:{minWidth:46,minHeight:46,alignItems:'center',justifyContent:'center',borderRadius:14,backgroundColor:theme.soft},
   syncBanner:{flexDirection:'row-reverse',alignItems:'center',gap:10,backgroundColor:theme.warning,borderRadius:16,padding:12,borderWidth:1,borderColor:'#F0DDA9'},
   optionRow:{flexDirection:'row-reverse',alignItems:'center',gap:10,minHeight:46},
